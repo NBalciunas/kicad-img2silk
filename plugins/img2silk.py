@@ -116,7 +116,7 @@ if wx:
             self.image = None
 
             s = wx.BoxSizer(wx.VERTICAL)
-            title = wx.StaticText(self, label="Img2Silk v1.0")
+            title = wx.StaticText(self, label="Img2Silk v1.1")
             title.SetFont(title.GetFont().Bold().Scaled(1.4))
             s.Add(title, 0, wx.ALL | wx.ALIGN_CENTER, 10)
 

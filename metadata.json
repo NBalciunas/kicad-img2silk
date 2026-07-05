@@ -1,8 +1,8 @@
 {
     "$schema": "https://go.kicad.org/pcm/schemas/v1",
     "name": "Img2Silk",
-    "description": "Import images onto PCB silkscreen.",
-    "description_full": "KiCad plugin for importing images as PCB silkscreen.",
+    "description": "KiCad plugin for importing images as PCB graphics.",
+    "description_full": "Import and convert images to silkscreen, copper, or solder mask layers directly in KiCad, no external tools required. Choose from five algorithms (Atkinson, Bayer 8×8, Floyd–Steinberg, and Random dithering for photos and gradients, or Threshold for logos and line art), fine-tune size, threshold, and dot size, and see a live preview before placing.",
     "identifier": "com.github.nbalciunas.kicad-img2silk",
     "type": "plugin",
     "author": {
@@ -23,7 +23,7 @@
     ],
     "versions": [
         {
-            "version": "1.0.0",
+            "version": "1.1.0",
             "status": "stable",
             "kicad_version": "8.0.8",
             "platforms": [
