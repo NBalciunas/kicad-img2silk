@@ -25,7 +25,7 @@
 2) Pick a **Dithering algorithm**: **Threshold** for logos and line art, or Atkinson / Bayer 8×8 / Floyd–Steinberg / Random to reproduce photos and gradients as dots.
 3) Use the **Black / white threshold** slider to control the conversion (in dithering modes it acts as a brightness fine-tune).
 4) In dithering modes, set the **Pixel Scale**, the physical size of each dot in mm (smaller = more detail, but more polygons).
-5) Choose the target **Layer**: Copper, Silkscreen, or Solder Mask (drawing on the mask layer *opens* the mask, exposing what is underneath).
+5) Choose the target **Layer**: Copper, Silkscreen, or Solder Mask.
 6) Enable **Invert colors** if the result comes out inverted (black/white swapped) from what you want.
 7) Enter the desired **Length (mm)** and **Width (mm)** for the final graphic.
 8) Keep **Maintain aspect ratio** checked to scale proportionally, or uncheck it to set width and height independently.
