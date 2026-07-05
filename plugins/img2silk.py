@@ -34,8 +34,6 @@ _ALGOS = (("Atkinson", 2), ("Bayer 8×8", 3), ("Floyd–Steinberg", 1),
 
 
 def _dither(grey, w, h, alpha, thresh, inv, algo):
-    """grey = RGB bytes of a greyscale image; returns bytearray of 0/1 (1 = dark).
-    algo: 0 threshold, 1 Floyd-Steinberg, 2 Atkinson, 3 Bayer 8x8, 4 random."""
     n = w * h
     if algo in _KERNELS:
         div, kernel = _KERNELS[algo]
@@ -96,7 +94,6 @@ def _runs(bits):
 
 
 def _rects(on, w, h):
-    """Merge identical runs in consecutive rows into rectangles (xa, xb, ya, yb)."""
     out, active = [], {}
     for y in range(h + 1):
         runs = set(_runs(on[y * w:(y + 1) * w])) if y < h else set()
@@ -261,7 +258,6 @@ if wx:
             self.update_bw()
 
         def _out_grid(self, dotted, length, width):
-            """The pixel grid on_create will draw — preview uses it too (WYSIWYG)."""
             ppmm = 100.0 / self.dot_size.GetValue() if dotted else PX_PER_MM
             max_px = DOT_MAX_PX if dotted else MAX_PX
             w_px = int(min(self.image.GetWidth(), max(16, length * ppmm), max_px))
