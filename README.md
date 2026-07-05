@@ -17,7 +17,23 @@
 
 ## Usage
 
-WIP
+![Img2Silk menu](docs/example-1.png)
+
+1) Click **Import Image** to load the artwork you want to convert into a silkscreen footprint.
+2) Use the **Black / white threshold** slider to control how the image is converted to pure black and white.
+3) Enable **Invert colors** if the silkscreen comes out inverted (black/white swapped) from what you want.
+4) Enter the desired **Length (mm)** and **Width (mm)** for the final footprint.
+5) Keep **Maintain aspect ratio** checked to scale proportionally, or uncheck it to set width and height independently.
+6) Click **Create Silkscreen** to generate and place the footprint.
+
+## Example
+
+The following example shows a generated silkscreen footprint using the specified parameters from the **Usage** section.
+
+![Imported image in 2D view](docs/example-2.png)
+![Imported image in 3D view](docs/example-3.png)
+
+This illustrates how the silkscreen is created in both 2D and 3D views, ready for placement on the PCB.
 
 ## License
 
