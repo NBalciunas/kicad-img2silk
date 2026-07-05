@@ -1,3 +1,4 @@
+import json
 import os
 import random
 
@@ -106,14 +107,26 @@ def _rects(on, w, h):
 
 if wx:
 
+    _GRAVEYARD = []
+
     class Img2SilkDialog(wx.Dialog):
         def __init__(self, parent, board):
             super().__init__(parent, title="Img2Silk")
             self.board = board
             self.image = None
+            self.replace = None
+            self.center = None
+            self.ref_uuid = None
+            self._ref_geom = None
+            self._ref_good = None
+            self._ref_shown = None
+            self.Bind(wx.EVT_CLOSE, self.on_close)
+            self.timer = wx.Timer(self)
+            self.Bind(wx.EVT_TIMER, self.on_tick, self.timer)
+            self.timer.Start(300)
 
             s = wx.BoxSizer(wx.VERTICAL)
-            title = wx.StaticText(self, label="Img2Silk v1.1")
+            title = wx.StaticText(self, label="Img2Silk v1.2")
             title.SetFont(title.GetFont().Bold().Scaled(1.4))
             s.Add(title, 0, wx.ALL | wx.ALIGN_CENTER, 10)
 
@@ -183,12 +196,65 @@ if wx:
             grid.Add(self.keep_aspect, 1, wx.EXPAND)
             s.Add(grid, 0, wx.LEFT | wx.RIGHT | wx.EXPAND, 10)
 
-            btn_create = wx.Button(self, label="Insert Graphics")
-            btn_create.Bind(wx.EVT_BUTTON, self.on_create)
-            s.Add(btn_create, 0, wx.ALL | wx.EXPAND, 10)
+            btn_ref = wx.Button(self, label="Place Reference Frame")
+            btn_ref.SetToolTip(
+                "Places a rectangle on the board (Dwgs.User layer). Move and "
+                "resize it with the normal KiCad tools, then click Insert "
+                "Graphics - the image will fill the frame.")
+            btn_ref.Bind(wx.EVT_BUTTON, self.on_place_ref)
+            s.Add(btn_ref, 0, wx.LEFT | wx.RIGHT | wx.TOP | wx.EXPAND, 10)
+
+            self.btn_create = wx.Button(self, label="Insert Graphics")
+            self.btn_create.Bind(wx.EVT_BUTTON, self.on_create)
+            s.Add(self.btn_create, 0, wx.ALL | wx.EXPAND, 10)
 
             self.SetSizerAndFit(s)
             self.CentreOnParent()
+
+            wx.CallAfter(self._detect_group)
+
+        def _detect_group(self):
+            groups = [g for g in self.board.Groups()
+                      if g.GetName().startswith("Img2Silk|")]
+            uids = {g.m_Uuid.AsString(): g for g in groups}
+            target = next((g for g in groups if g.IsSelected()), None)
+            if target is None:
+                for d in self.board.GetDrawings():
+                    pg = d.GetParentGroup()
+                    if pg and d.IsSelected() and pg.m_Uuid.AsString() in uids:
+                        target = uids[pg.m_Uuid.AsString()]
+                        break
+            if target is not None:
+                self._load_group(target)
+            elif not groups and any(g.GetName() == "Img2Silk" and g.IsSelected()
+                                    for g in self.board.Groups()):
+                wx.MessageBox("This graphic was placed by an older Img2Silk "
+                              "version, so its settings were not saved and it "
+                              "cannot be edited.\nDelete it and insert a new "
+                              "one.", "Img2Silk", wx.ICON_INFORMATION, self)
+
+        def _load_group(self, group):
+            try:
+                cfg = json.loads(group.GetName().split("|", 1)[1])
+                if not self._load(cfg["img"]):
+                    raise ValueError("image not found: %s" % cfg["img"])
+            except (ValueError, KeyError, TypeError) as e:
+                wx.MessageBox("Could not reload the selected graphic's source "
+                              "image.\n%s" % e, "Img2Silk", wx.ICON_WARNING)
+                return
+            self.replace = group.m_Uuid.AsString()
+            c = group.GetBoundingBox().GetCenter()
+            self.center = (pcbnew.ToMM(c.x), pcbnew.ToMM(c.y))
+            self.dither.SetSelection(cfg["algo"])
+            self.threshold.SetValue(cfg["thr"])
+            self.dot_size.SetValue(cfg["dot"])
+            self.dot_val.SetLabel("%.2f" % (cfg["dot"] / 100.0))
+            self.invert.SetValue(cfg["inv"])
+            self.layer.SetSelection(cfg["layer"])
+            self.length.ChangeValue("%g" % cfg["len"])
+            self.width.ChangeValue("%g" % cfg["wid"])
+            self.btn_create.SetLabel("Update Graphics")
+            self.update_bw()
 
         def on_import(self, _):
             with wx.FileDialog(self, "Choose an image",
@@ -197,10 +263,16 @@ if wx:
                 if fd.ShowModal() != wx.ID_OK:
                     return
                 path = fd.GetPath()
-            img = wx.Image(path)
-            if not img.IsOk():
+            if not self._load(path):
                 wx.MessageBox("Could not load image.", "Img2Silk", wx.ICON_ERROR)
-                return
+
+        def _load(self, path):
+            nolog = wx.LogNull()
+            img = wx.Image(path)
+            del nolog
+            if not img.IsOk():
+                return False
+            self.img_path = path
             self.image = img
             w, h = img.GetWidth(), img.GetHeight()
             k = min(280.0 / w, 280.0 / h, 1.0)
@@ -223,6 +295,97 @@ if wx:
             self.update_bw()
             self.Fit()
             self.Layout()
+            return True
+
+        def _board_center(self):
+            if self.center:
+                return self.center
+            bbox = self.board.GetBoardEdgesBoundingBox()
+            if bbox.GetWidth() > 0 and bbox.GetHeight() > 0:
+                return pcbnew.ToMM(bbox.GetCenter().x), pcbnew.ToMM(bbox.GetCenter().y)
+            return 100.0, 100.0
+
+        def _remove(self, item):
+            getattr(item, "ClearSelected", lambda: None)()
+            _GRAVEYARD.append(item)
+            self.board.Remove(item)
+
+        def _find_ref(self):
+            if self.ref_uuid:
+                for d in self.board.GetDrawings():
+                    if d.m_Uuid.AsString() == self.ref_uuid:
+                        return d
+            return None
+
+        def _del_ref(self):
+            ref = self._find_ref()
+            self.ref_uuid = None
+            self._ref_geom = None
+            if ref is not None:
+                self._remove(ref)
+            return ref is not None
+
+        def on_tick(self, _):
+            ref = self._find_ref()
+            if ref is None:
+                return
+            p0, p1 = ref.GetStart(), ref.GetEnd()
+            geom = (p0.x, p0.y, p1.x, p1.y)
+            moving = geom != self._ref_geom
+            self._ref_geom = geom
+            length = abs(pcbnew.ToMM(p1.x - p0.x))
+            width = abs(pcbnew.ToMM(p1.y - p0.y))
+            if moving:
+                self.length.ChangeValue("%.2f" % length)
+                self.width.ChangeValue("%.2f" % width)
+                return
+            if (self.image is not None and self.keep_aspect.GetValue()
+                    and length > 0 and abs(width - length * self._aspect) > 0.01):
+                gl, gw = self._ref_good or (length, width)
+                if abs(width - gw) > abs(length - gl):
+                    length = width / self._aspect
+                    ref.SetEnd(pcbnew.VECTOR2I(
+                        p0.x + (1 if p1.x >= p0.x else -1) * pcbnew.FromMM(length),
+                        p1.y))
+                else:
+                    width = length * self._aspect
+                    ref.SetEnd(pcbnew.VECTOR2I(
+                        p1.x,
+                        p0.y + (1 if p1.y >= p0.y else -1) * pcbnew.FromMM(width)))
+                self._ref_geom = None
+                pcbnew.Refresh()
+            self._ref_good = (length, width)
+            if (length, width) != self._ref_shown:
+                self._ref_shown = (length, width)
+                self.length.ChangeValue("%.2f" % length)
+                self.width.ChangeValue("%.2f" % width)
+                self.update_bw()
+
+        def on_place_ref(self, _):
+            self._del_ref()
+            length = self._mm(self.length) or 50.0
+            width = self._mm(self.width) or 50.0
+            cx, cy = self._board_center()
+            rect = pcbnew.PCB_SHAPE(self.board)
+            rect.SetShape(pcbnew.SHAPE_T_RECT)
+            rect.SetStart(pcbnew.VECTOR2I(pcbnew.FromMM(cx - length / 2.0),
+                                          pcbnew.FromMM(cy - width / 2.0)))
+            rect.SetEnd(pcbnew.VECTOR2I(pcbnew.FromMM(cx + length / 2.0),
+                                        pcbnew.FromMM(cy + width / 2.0)))
+            rect.SetLayer(pcbnew.Dwgs_User)
+            rect.SetWidth(pcbnew.FromMM(0.2))
+            self.board.Add(rect)
+            self.ref_uuid = rect.m_Uuid.AsString()
+            self._ref_geom = None
+            self._ref_good = (length, width)
+            self._ref_shown = (length, width)
+            pcbnew.Refresh()
+
+        def on_close(self, _):
+            self.timer.Stop()
+            if self._del_ref():
+                pcbnew.Refresh()
+            self.Destroy()
 
         def _mm(self, ctrl):
             try:
@@ -294,15 +457,28 @@ if wx:
             if self.image is None:
                 wx.MessageBox("Import an image first.", "Img2Silk", wx.ICON_WARNING)
                 return
-            try:
-                length = float(self.length.GetValue())
-                width = float(self.width.GetValue())
+            ref = self._find_ref()
+            if ref is not None:
+                p0, p1 = ref.GetStart(), ref.GetEnd()
+                length = abs(pcbnew.ToMM(p1.x - p0.x))
+                width = abs(pcbnew.ToMM(p1.y - p0.y))
+                cx = pcbnew.ToMM((p0.x + p1.x) // 2)
+                cy = pcbnew.ToMM((p0.y + p1.y) // 2)
                 if length <= 0 or width <= 0:
-                    raise ValueError
-            except ValueError:
-                wx.MessageBox("Length and Width must be positive numbers.",
-                              "Img2Silk", wx.ICON_WARNING)
-                return
+                    wx.MessageBox("The reference frame has zero size.",
+                                  "Img2Silk", wx.ICON_WARNING)
+                    return
+            else:
+                try:
+                    length = float(self.length.GetValue())
+                    width = float(self.width.GetValue())
+                    if length <= 0 or width <= 0:
+                        raise ValueError
+                except ValueError:
+                    wx.MessageBox("Length and Width must be positive numbers.",
+                                  "Img2Silk", wx.ICON_WARNING)
+                    return
+                cx, cy = self._board_center()
 
             algo = _ALGOS[self.dither.GetSelection()][1]
             busy = wx.BusyCursor()
@@ -314,12 +490,6 @@ if wx:
                          self.threshold.GetValue() * 255 // 100,
                          not self.invert.GetValue(), algo)
 
-            bbox = self.board.GetBoardEdgesBoundingBox()
-            if bbox.GetWidth() > 0 and bbox.GetHeight() > 0:
-                cx = pcbnew.ToMM(bbox.GetCenter().x)
-                cy = pcbnew.ToMM(bbox.GetCenter().y)
-            else:
-                cx, cy = 100.0, 100.0
             x0, y0 = cx - length / 2.0, cy - width / 2.0
 
             rects = _rects(on, w_px, h_px)
@@ -333,10 +503,26 @@ if wx:
                     % len(rects), "Img2Silk", wx.YES_NO | wx.ICON_WARNING) != wx.YES:
                 return
 
+            self._del_ref()
+            if self.replace:
+                old = [d for d in self.board.GetDrawings()
+                       if d.GetParentGroup()
+                       and d.GetParentGroup().m_Uuid.AsString() == self.replace]
+                for d in old:
+                    self._remove(d)
+                for g in self.board.Groups():
+                    if g.m_Uuid.AsString() == self.replace:
+                        self._remove(g)
+                        break
+
             xs = [pcbnew.FromMM(x0 + i * length / w_px) for i in range(w_px + 1)]
             ys = [pcbnew.FromMM(y0 + i * width / h_px) for i in range(h_px + 1)]
             group = pcbnew.PCB_GROUP(self.board)
-            group.SetName("Img2Silk")
+            group.SetName("Img2Silk|" + json.dumps(
+                {"img": self.img_path, "algo": self.dither.GetSelection(),
+                 "thr": self.threshold.GetValue(), "dot": self.dot_size.GetValue(),
+                 "inv": self.invert.GetValue(), "layer": self.layer.GetSelection(),
+                 "len": length, "wid": width}))
             self.board.Add(group)
             for i in range(0, len(rects), 2000):
                 poly = pcbnew.SHAPE_POLY_SET()
@@ -358,12 +544,14 @@ if wx:
                 self.board.Add(shape)
                 group.AddItem(shape)
             pcbnew.Refresh()
-            self.EndModal(wx.ID_OK)
+            self.Close()
 
 
 if pcbnew:
 
     class Img2Silk(pcbnew.ActionPlugin):
+        _dlg = None
+
         def defaults(self):
             self.name = "Img2Silk"
             self.category = "Graphics"
@@ -377,9 +565,14 @@ if pcbnew:
                 wx.InitAllImageHandlers()
             except Exception:
                 pass
-            dlg = Img2SilkDialog(wx.GetActiveWindow(), pcbnew.GetBoard())
-            dlg.ShowModal()
-            dlg.Destroy()
+            if Img2Silk._dlg is not None:
+                try:
+                    Img2Silk._dlg.Raise()
+                    return
+                except RuntimeError:
+                    pass
+            Img2Silk._dlg = Img2SilkDialog(wx.GetActiveWindow(), pcbnew.GetBoard())
+            Img2Silk._dlg.Show()
 
 
 if __name__ == "__main__":
