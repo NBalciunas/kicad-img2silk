@@ -1,0 +1,34 @@
+{
+    "$schema": "https://go.kicad.org/pcm/schemas/v1",
+    "name": "Img2Silk",
+    "description": "Import images onto PCB silkscreen.",
+    "description_full": "KiCad plugin for importing images as PCB silkscreen.",
+    "identifier": "com.github.nbalciunas.kicad-img2silk",
+    "type": "plugin",
+    "author": {
+        "name": "Nojus Balčiūnas",
+        "contact": {
+            "web": "https://nbalciunas.github.io/"
+        }
+    },
+    "license": "MIT",
+    "icon": "assets/icon.png",
+    "resources": {
+        "homepage": "https://github.com/NBalciunas/kicad-img2silk"
+    },
+    "tags": [
+        "silkscreen",
+        "image",
+        "pcb-art"
+    ],
+    "versions": [
+        {
+            "version": "1.0.0",
+            "status": "stable",
+            "kicad_version": "8.0.8",
+            "platforms": [
+                "windows"
+            ]
+        }
+    ]
+}
