@@ -5,7 +5,7 @@
 ## Features
 
 - Import and convert images to silkscreen directly in KiCad.
-- Adjust size, black and white threshold, and other settings before placing the image.
+- Adjust size, black / white threshold, and other settings before placing the image.
 - No external image editor required.
 
 ## Installation
