@@ -105,6 +105,102 @@ def _rects(on, w, h):
     return out
 
 
+def _outline(on, w, h):
+    out = bytearray(w * h)
+    for y in range(h):
+        for x in range(w):
+            i = y * w + x
+            if on[i] and (x == 0 or x == w - 1 or y == 0 or y == h - 1
+                          or not (on[i - 1] and on[i + 1]
+                                  and on[i - w] and on[i + w])):
+                out[i] = 1
+    return out
+
+
+_MASKS = (("Black", (25, 25, 25), (60, 55, 50)),
+          ("Blue", (15, 35, 90), (60, 90, 160)),
+          ("Green", (15, 70, 40), (60, 130, 75)),
+          ("Purple", (60, 25, 90), (110, 70, 150)),
+          ("Red", (120, 20, 25), (180, 70, 60)),
+          ("White", (225, 225, 225), (235, 230, 218)),
+          ("Yellow", (200, 160, 30), (215, 180, 60)))
+_FINISH = (("ENIG (Gold)", (225, 185, 95)), ("HASL (Silver)", (200, 200, 200)))
+_DEF_MASK = 2
+_DEF_FINISH = 1
+_LAYER_CHOICES = ("Copper", "Silkscreen", "Solder Mask", "Copper and Solder Mask")
+_LAYER_MAP = ((0,), (1,), (2,), (0, 2))
+_FR4 = (205, 180, 140)
+_SILK_WHITE = (250, 250, 250)
+
+
+def _lum(rgb):
+    return (299 * rgb[0] + 587 * rgb[1] + 114 * rgb[2]) // 1000
+
+
+def _palette5(mask_idx, fin_idx, mode=0):
+    _, m0, m1 = _MASKS[mask_idx]
+    pal = [(m0, (0, 0, 0)), (_FR4, (0, 1, 0)), (_SILK_WHITE, (0, 0, 1))]
+    if mode == 0:
+        pal += [(m1, (1, 0, 0)), (_FINISH[fin_idx][1], (1, 1, 0))]
+    pal.sort(key=lambda p: _lum(p[0]))
+    return pal
+
+
+def _dither5(grey, w, h, alpha, lums, blank, bias, inv, algo):
+    n = w * h
+    tbl = bytes(min(range(len(lums)), key=lambda k: abs(lums[k] - v))
+                for v in range(256))
+    amp = (lums[-1] - lums[0]) // (2 * (len(lums) - 1)) or 1
+
+    def adj(v):
+        v = (255 - v if inv else v) + bias
+        return 0 if v < 0 else 255 if v > 255 else v
+
+    if algo in _KERNELS:
+        div, kernel = _KERNELS[algo]
+        px = [float(adj(grey[i * 3])) for i in range(n)]
+        if alpha is not None:
+            for i in range(n):
+                if alpha[i] < 128:
+                    px[i] = float(lums[blank])
+        lv = bytearray(n)
+        i = 0
+        for y in range(h):
+            for x in range(w):
+                old = px[i]
+                c = tbl[0 if old < 0 else 255 if old > 255 else int(old)]
+                lv[i] = c
+                err = (old - lums[c]) / div
+                for dx, dy, wt in kernel:
+                    xx = x + dx
+                    if 0 <= xx < w and y + dy < h:
+                        px[i + dy * w + dx] += err * wt
+                i += 1
+    elif algo == 3:
+        lv = bytearray(n)
+        i = 0
+        for y in range(h):
+            brow = _BAYER[y & 7]
+            for x in range(w):
+                v = adj(grey[i * 3]) + (brow[x & 7] * amp) // 32 - amp
+                lv[i] = tbl[0 if v < 0 else 255 if v > 255 else v]
+                i += 1
+    elif algo == 4:
+        rnd = random.Random(0)
+        lv = bytearray(n)
+        for i in range(n):
+            v = adj(grey[i * 3]) + rnd.randrange(-amp, amp + 1)
+            lv[i] = tbl[0 if v < 0 else 255 if v > 255 else v]
+    else:
+        lv = bytearray(grey[::3].translate(
+            bytes(tbl[adj(v)] for v in range(256))))
+    if alpha is not None:
+        for i in range(n):
+            if alpha[i] < 128:
+                lv[i] = blank
+    return lv
+
+
 if wx:
 
     _GRAVEYARD = []
@@ -126,7 +222,7 @@ if wx:
             self.timer.Start(300)
 
             s = wx.BoxSizer(wx.VERTICAL)
-            title = wx.StaticText(self, label="Img2Silk v1.2")
+            title = wx.StaticText(self, label="Img2Silk v1.3")
             title.SetFont(title.GetFont().Bold().Scaled(1.4))
             s.Add(title, 0, wx.ALL | wx.ALIGN_CENTER, 10)
 
@@ -141,7 +237,7 @@ if wx:
             previews.Add(self.preview_bw, 0)
             s.Add(previews, 0, wx.ALL | wx.ALIGN_CENTER, 10)
 
-            grid = wx.FlexGridSizer(8, 2, 5, 5)
+            grid = wx.FlexGridSizer(14, 2, 5, 5)
             grid.AddGrowableCol(1)
             grid.Add(wx.StaticText(self, label="Dithering algorithm:"), 0, wx.ALIGN_CENTER_VERTICAL)
             self.dither = wx.Choice(self, choices=[n for n, _ in _ALGOS])
@@ -169,10 +265,55 @@ if wx:
             dot_row.Add(wx.StaticText(self, label="1.50"), 0, wx.ALIGN_CENTER_VERTICAL)
             grid.Add(dot_row, 1, wx.EXPAND)
             grid.Add(wx.StaticText(self, label="Layer:"), 0, wx.ALIGN_CENTER_VERTICAL)
-            self.layer = wx.Choice(self, choices=["Copper", "Silkscreen", "Solder Mask"])
+            self.layer = wx.Choice(self, choices=list(_LAYER_CHOICES))
             self.layer.SetSelection(1)
             self.layer.Disable()
             grid.Add(self.layer, 1, wx.EXPAND)
+            grid.Add(wx.StaticText(self, label="Side:"), 0, wx.ALIGN_CENTER_VERTICAL)
+            self.side = wx.Choice(self, choices=["Front", "Back"])
+            self.side.SetToolTip("Back side graphics are mirrored so they "
+                                 "read correctly viewed from the back.")
+            self.side.SetSelection(0)
+            self.side.Disable()
+            grid.Add(self.side, 1, wx.EXPAND)
+            self.outline = wx.CheckBox(self, label="Toggle outline")
+            self.outline.Disable()
+            self.outline.Bind(wx.EVT_CHECKBOX, self.on_outline)
+            grid.Add(self.outline, 0, wx.ALIGN_CENTER_VERTICAL)
+            self.outline_layer = wx.Choice(self, choices=list(_LAYER_CHOICES))
+            self.outline_layer.SetSelection(1)
+            self.outline_layer.Disable()
+            self.outline_layer.Bind(wx.EVT_CHOICE, self.update_bw)
+            grid.Add(self.outline_layer, 1, wx.EXPAND)
+            self.five = wx.CheckBox(self, label="Multi-color graphic")
+            self.five.SetToolTip(
+                "Dithers the image using the board itself as a palette. "
+                "Shades are built by stacking silkscreen, copper, and solder "
+                "mask openings.")
+            self.five.Disable()
+            self.five.Bind(wx.EVT_CHECKBOX, self.on_5c)
+            grid.Add(self.five, 0, wx.ALIGN_CENTER_VERTICAL)
+            grid.Add((0, 0))
+            grid.Add(wx.StaticText(self, label="Multi-color PCB layers:"), 0, wx.ALIGN_CENTER_VERTICAL)
+            self.mc_layers = wx.Choice(self, choices=[
+                "Silkscreen, Copper and Solder Mask (5 Colors)",
+                "Silkscreen and Solder Mask (3 Colors)"])
+            self.mc_layers.SetSelection(0)
+            self.mc_layers.Disable()
+            self.mc_layers.Bind(wx.EVT_CHOICE, self.on_5c_layers)
+            grid.Add(self.mc_layers, 1, wx.EXPAND)
+            grid.Add(wx.StaticText(self, label="PCB color:"), 0, wx.ALIGN_CENTER_VERTICAL)
+            self.mask_col = wx.Choice(self, choices=[m[0] for m in _MASKS])
+            self.mask_col.SetSelection(_DEF_MASK)
+            self.mask_col.Disable()
+            self.mask_col.Bind(wx.EVT_CHOICE, self.update_bw)
+            grid.Add(self.mask_col, 1, wx.EXPAND)
+            grid.Add(wx.StaticText(self, label="Surface finish:"), 0, wx.ALIGN_CENTER_VERTICAL)
+            self.finish = wx.Choice(self, choices=[f[0] for f in _FINISH])
+            self.finish.SetSelection(_DEF_FINISH)
+            self.finish.Disable()
+            self.finish.Bind(wx.EVT_CHOICE, self.update_bw)
+            grid.Add(self.finish, 1, wx.EXPAND)
             grid.Add((0, 0))
             self.invert = wx.CheckBox(self, label="Invert colors")
             self.invert.Disable()
@@ -198,9 +339,10 @@ if wx:
 
             btn_ref = wx.Button(self, label="Place Reference Frame")
             btn_ref.SetToolTip(
-                "Places a rectangle on the board (Dwgs.User layer). Move and "
-                "resize it with the normal KiCad tools, then click Insert "
-                "Graphics - the image will fill the frame.")
+                "Adds a rectangle to the board on the Dwgs.User layer. Move "
+                "and resize it like any other graphic, then click Insert "
+                "Graphics to fit the image into it. The frame is removed "
+                "automatically.")
             btn_ref.Bind(wx.EVT_BUTTON, self.on_place_ref)
             s.Add(btn_ref, 0, wx.LEFT | wx.RIGHT | wx.TOP | wx.EXPAND, 10)
 
@@ -251,10 +393,18 @@ if wx:
             self.dot_val.SetLabel("%.2f" % (cfg["dot"] / 100.0))
             self.invert.SetValue(cfg["inv"])
             self.layer.SetSelection(cfg["layer"])
+            self.side.SetSelection(cfg.get("side", 0))
+            self.outline.SetValue(cfg.get("ol", False))
+            self.outline_layer.SetSelection(cfg.get("olay", 1))
+            self.outline_layer.Enable(self.outline.GetValue())
+            self.five.SetValue(cfg.get("5c", False))
+            self.mc_layers.SetSelection(cfg.get("mcl", 0))
+            self.mask_col.SetSelection(cfg.get("mask", _DEF_MASK))
+            self.finish.SetSelection(cfg.get("fin", _DEF_FINISH))
             self.length.ChangeValue("%g" % cfg["len"])
             self.width.ChangeValue("%g" % cfg["wid"])
             self.btn_create.SetLabel("Update Graphics")
-            self.update_bw()
+            self.on_5c(None)
 
         def on_import(self, _):
             with wx.FileDialog(self, "Choose an image",
@@ -290,6 +440,10 @@ if wx:
             self.width.Enable()
             self.keep_aspect.Enable()
             self.layer.Enable()
+            self.side.Enable()
+            self.outline.Enable()
+            self.outline_layer.Enable(self.outline.GetValue())
+            self.five.Enable()
             self.length.ChangeValue("50")
             self.width.ChangeValue("%.2f" % (50.0 * self._aspect))
             self.update_bw()
@@ -416,6 +570,25 @@ if wx:
             if self.keep_aspect.GetValue():
                 self.on_length(None)
 
+        def on_outline(self, _):
+            self.outline_layer.Enable(self.outline.GetValue())
+            self.update_bw()
+
+        def on_5c_layers(self, _):
+            self.finish.Enable(self.five.GetValue()
+                               and self.mc_layers.GetSelection() == 0)
+            self.update_bw()
+
+        def on_5c(self, _):
+            f = self.five.GetValue()
+            self.mc_layers.Enable(f)
+            self.mask_col.Enable(f)
+            self.finish.Enable(f and self.mc_layers.GetSelection() == 0)
+            self.layer.Enable(not f)
+            self.outline.Enable(not f)
+            self.outline_layer.Enable(not f and self.outline.GetValue())
+            self.update_bw()
+
         def on_dot_size(self, _):
             self.dot_val.SetLabel("%.2f" % (self.dot_size.GetValue() / 100.0))
             self.update_bw()
@@ -441,17 +614,42 @@ if wx:
                 alpha = bytes(img.GetAlphaBuffer()) if img.HasAlpha() else None
             else:
                 grey, alpha, w_px, h_px = self._grey, self._alpha, self._pw, self._ph
-            on = _dither(grey, w_px, h_px, alpha,
-                         self.threshold.GetValue() * 255 // 100,
-                         self.invert.GetValue(), algo)
-            v = bytes(on).translate(bytes([255] + [0] * 255))
-            out = bytearray(len(v) * 3)
-            out[0::3] = out[1::3] = out[2::3] = v
+            if self.five.GetValue():
+                pal, lv = self._levels5(grey, alpha, w_px, h_px)
+                out = bytearray(len(lv) * 3)
+                for ch in range(3):
+                    out[ch::3] = lv.translate(
+                        bytes(p[0][ch] for p in pal).ljust(256, b"\x00"))
+            else:
+                on = _dither(grey, w_px, h_px, alpha,
+                             self.threshold.GetValue() * 255 // 100,
+                             self.invert.GetValue(), algo)
+                v = bytes(on).translate(bytes([255] + [0] * 255))
+                out = bytearray(len(v) * 3)
+                out[0::3] = out[1::3] = out[2::3] = v
+                if self.outline.GetValue():
+                    ol = _outline(bytes(b ^ 1 for b in on), w_px, h_px)
+                    for i, o in enumerate(ol):
+                        if o:
+                            out[i * 3 + 1] = out[i * 3 + 2] = 0
             bw = wx.Image(w_px, h_px, bytes(out))
             k = min(280.0 / w_px, 280.0 / h_px)
             bw.Rescale(max(1, int(w_px * k)), max(1, int(h_px * k)),
                        wx.IMAGE_QUALITY_HIGH if k < 1 else wx.IMAGE_QUALITY_NORMAL)
             self.preview_bw.SetBitmap(wx.Bitmap(bw))
+
+        def _levels5(self, grey, alpha, w_px, h_px):
+            pal = _palette5(self.mask_col.GetSelection(),
+                            self.finish.GetSelection(),
+                            self.mc_layers.GetSelection())
+            lv = _dither5(grey, w_px, h_px, alpha,
+                          [_lum(p[0]) for p in pal],
+                          next(i for i, p in enumerate(pal)
+                               if p[1] == (0, 0, 0)),
+                          (50 - self.threshold.GetValue()) * 255 // 100,
+                          self.invert.GetValue(),
+                          _ALGOS[self.dither.GetSelection()][1])
+            return pal, bytes(lv)
 
         def on_create(self, _):
             if self.image is None:
@@ -485,22 +683,41 @@ if wx:
             w_px, h_px = self._out_grid(algo != 0, length, width)
             img = self.image.ConvertToGreyscale()
             img.Rescale(w_px, h_px, wx.IMAGE_QUALITY_HIGH)
-            on = _dither(bytes(img.GetData()), w_px, h_px,
-                         bytes(img.GetAlphaBuffer()) if img.HasAlpha() else None,
-                         self.threshold.GetValue() * 255 // 100,
-                         not self.invert.GetValue(), algo)
+            grey = bytes(img.GetData())
+            alpha = bytes(img.GetAlphaBuffer()) if img.HasAlpha() else None
+            back = self.side.GetSelection() == 1
+            layers = ((pcbnew.B_Cu, pcbnew.B_SilkS, pcbnew.B_Mask) if back
+                      else (pcbnew.F_Cu, pcbnew.F_SilkS, pcbnew.F_Mask))
+            if self.five.GetValue():
+                pal, lv = self._levels5(grey, alpha, w_px, h_px)
+                jobs = [(layer, _rects(lv.translate(
+                            bytes(p[1][k] for p in pal).ljust(256, b"\x00")),
+                            w_px, h_px))
+                        for k, layer in ((0, layers[0]), (1, layers[2]),
+                                         (2, layers[1]))]
+            else:
+                on = _dither(grey, w_px, h_px, alpha,
+                             self.threshold.GetValue() * 255 // 100,
+                             not self.invert.GetValue(), algo)
+                img_rects = _rects(on, w_px, h_px)
+                jobs = [(layers[k], img_rects)
+                        for k in _LAYER_MAP[self.layer.GetSelection()]]
+                if self.outline.GetValue():
+                    ol_rects = _rects(_outline(on, w_px, h_px), w_px, h_px)
+                    jobs += [(layers[k], ol_rects)
+                             for k in _LAYER_MAP[self.outline_layer.GetSelection()]]
 
             x0, y0 = cx - length / 2.0, cy - width / 2.0
 
-            rects = _rects(on, w_px, h_px)
-            if not rects:
+            total = sum(len(r) for _, r in jobs)
+            if total == 0:
                 wx.MessageBox("No pixels selected at this threshold. Try moving the slider.",
                               "Img2Silk", wx.ICON_WARNING)
                 return
-            if len(rects) > 30000 and wx.MessageBox(
+            if total > 30000 and wx.MessageBox(
                     "This image produces %d polygons and may make KiCad very slow.\n"
                     "A smaller size or Threshold mode gives fewer polygons.\n\nContinue?"
-                    % len(rects), "Img2Silk", wx.YES_NO | wx.ICON_WARNING) != wx.YES:
+                    % total, "Img2Silk", wx.YES_NO | wx.ICON_WARNING) != wx.YES:
                 return
 
             self._del_ref()
@@ -517,13 +734,29 @@ if wx:
 
             xs = [pcbnew.FromMM(x0 + i * length / w_px) for i in range(w_px + 1)]
             ys = [pcbnew.FromMM(y0 + i * width / h_px) for i in range(h_px + 1)]
+            if back:
+                xs.reverse()
             group = pcbnew.PCB_GROUP(self.board)
             group.SetName("Img2Silk|" + json.dumps(
                 {"img": self.img_path, "algo": self.dither.GetSelection(),
                  "thr": self.threshold.GetValue(), "dot": self.dot_size.GetValue(),
                  "inv": self.invert.GetValue(), "layer": self.layer.GetSelection(),
+                 "side": self.side.GetSelection(),
+                 "ol": self.outline.GetValue(),
+                 "olay": self.outline_layer.GetSelection(),
+                 "5c": self.five.GetValue(),
+                 "mcl": self.mc_layers.GetSelection(),
+                 "mask": self.mask_col.GetSelection(),
+                 "fin": self.finish.GetSelection(),
                  "len": length, "wid": width}))
             self.board.Add(group)
+            for layer, rects in jobs:
+                if rects:
+                    self._add_polys(group, rects, xs, ys, layer)
+            pcbnew.Refresh()
+            self.Close()
+
+        def _add_polys(self, group, rects, xs, ys, layer):
             for i in range(0, len(rects), 2000):
                 poly = pcbnew.SHAPE_POLY_SET()
                 for xa, xb, ya, yb in rects[i:i + 2000]:
@@ -537,14 +770,11 @@ if wx:
                 shape = pcbnew.PCB_SHAPE(self.board)
                 shape.SetShape(pcbnew.SHAPE_T_POLY)
                 shape.SetFilled(True)
-                shape.SetLayer((pcbnew.F_Cu, pcbnew.F_SilkS,
-                                pcbnew.F_Mask)[self.layer.GetSelection()])
+                shape.SetLayer(layer)
                 shape.SetPolyShape(poly)
                 shape.SetWidth(0)
                 self.board.Add(shape)
                 group.AddItem(shape)
-            pcbnew.Refresh()
-            self.Close()
 
 
 if pcbnew:
@@ -591,6 +821,36 @@ if __name__ == "__main__":
         assert 25 <= cov <= 75, (algo, cov)
     assert _dither(grey100, 10, 10, None, 128, False, 4) == \
         _dither(grey100, 10, 10, None, 128, False, 4)
+    assert list(_outline(bytearray([1] * 9), 3, 3)) == [1, 1, 1, 1, 0, 1, 1, 1, 1]
+    assert list(_outline(bytearray([0, 1, 0, 1, 1, 1, 0, 1, 0]), 3, 3)) == \
+        [0, 1, 0, 1, 0, 1, 0, 1, 0]
+    assert list(_outline(bytearray(9), 3, 3)) == [0] * 9
+    lums5 = [0, 64, 128, 192, 255]
+    ramp = bytes(b for v in (0, 64, 128, 192, 255) for b in (v, v, v))
+    assert list(_dither5(ramp, 5, 1, None, lums5, 0, 0, False, 0)) == [0, 1, 2, 3, 4]
+    assert list(_dither5(ramp, 5, 1, None, lums5, 0, 0, True, 0)) == [4, 3, 2, 1, 0]
+    assert list(_dither5(ramp, 5, 1, bytes([255, 0, 255, 0, 255]),
+                         lums5, 0, 0, False, 0)) == [0, 0, 2, 0, 4]
+    assert list(_dither5(ramp, 5, 1, None, lums5, 0, -255, False, 0)) == [0] * 5
+    g96 = bytes([96, 96, 96] * 100)
+    for algo in (0, 1, 2, 3, 4):
+        lv = _dither5(g96, 10, 10, None, lums5, 0, 0, False, algo)
+        avg = sum(lums5[c] for c in lv) / 100.0
+        assert 60 <= avg <= 132, (algo, avg)
+    lums3 = [0, 128, 255]
+    assert list(_dither5(ramp, 5, 1, None, lums3, 0, 0, False, 0)) == [0, 0, 1, 2, 2]
+    for algo in (1, 3, 4):
+        lv = _dither5(g96, 10, 10, None, lums3, 0, 0, False, algo)
+        avg = sum(lums3[c] for c in lv) / 100.0
+        assert 60 <= avg <= 132, (algo, avg)
+    for m in range(len(_MASKS)):
+        pal = _palette5(m, 0, 1)
+        assert {p[1] for p in pal} == {(0, 0, 0), (0, 1, 0), (0, 0, 1)}
+        for f in range(len(_FINISH)):
+            pal = _palette5(m, f)
+            assert {p[1] for p in pal} == {(0, 0, 0), (1, 0, 0), (0, 1, 0),
+                                           (1, 1, 0), (0, 0, 1)}
+            assert [_lum(p[0]) for p in pal] == sorted(_lum(p[0]) for p in pal)
     assert _rects(bytearray([1, 1, 1, 1]), 2, 2) == [(0, 2, 0, 2)]
     assert sorted(_rects(bytearray([1, 0, 0, 1]), 2, 2)) == [(0, 1, 0, 1), (1, 2, 1, 2)]
     print("self-check ok")
