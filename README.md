@@ -6,6 +6,7 @@
 
 - Import and convert images to silkscreen, copper, or solder mask directly in KiCad.
 - Five conversion algorithms: Atkinson, Bayer 8×8, Floyd–Steinberg, and Random dithering for photos and gradients, plus Threshold for logos and line art.
+- Multi-color graphic mode that dithers the image using the board itself as a palette. Shades are built by stacking silkscreen, copper, and solder mask openings.
 - Live preview that shows exactly how the image will look on the board.
 - Adjust size, black / white threshold, dither dot size, and other settings before placing the image.
 - No external image editor required.
@@ -27,7 +28,7 @@
 2) Pick a **Dithering algorithm**: **Threshold** for logos and line art, or Atkinson / Bayer 8×8 / Floyd–Steinberg / Random to reproduce photos and gradients as dots.
 3) Use the **Black / white threshold** slider to control the conversion (in dithering modes it acts as a brightness fine-tune).
 4) In dithering modes, set the **Pixel Scale**, the physical size of each dot in mm (smaller = more detail, but more polygons).
-5) Choose the target **Layer**: Copper, Silkscreen, or Solder Mask.
+5) Choose the target **Layer**: Copper, Silkscreen, Solder Mask, or Copper and Solder Mask (naked copper), and the **Side** of the board: Front or Back.
 6) Enable **Invert colors** if the result comes out inverted (black/white swapped) from what you want.
 7) Enter the desired **Length (mm)** and **Width (mm)** for the final graphic.
 8) Keep **Maintain aspect ratio** checked to scale proportionally, or uncheck it to set width and height independently.
@@ -49,14 +50,16 @@
 
 #### Side note: The source image file must still exist at its original location.
 
-## Example
+## Examples
 
 The following example shows a generated silkscreen footprint using the specified parameters from the **Usage** section.
 
 ![Imported image in 2D view](docs/example-2.png)
 ![Imported image in 3D view](docs/example-3.png)
 
-This illustrates how the silkscreen is created in both 2D and 3D views, ready for placement on the PCB.
+The following example shows generated graphics using the multi-color mode. (Left: 5 Color; Right: 3 Color)
+
+![Multi-color graphic in 3D view](docs/example-4.png)
 
 ## License
 
