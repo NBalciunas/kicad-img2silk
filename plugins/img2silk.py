@@ -1,6 +1,8 @@
+import base64
 import json
 import os
 import random
+import tempfile
 
 try:
     import pcbnew
@@ -11,6 +13,7 @@ except ImportError:
 MAX_PX = 1000
 PX_PER_MM = 10.0
 DOT_MAX_PX = 400
+_IMG_PPI = 300
 
 _KERNELS = {
     1: (16, ((1, 0, 7), (-1, 1, 3), (0, 1, 5), (1, 1, 1))),
@@ -127,6 +130,7 @@ _MASKS = (("Black", (25, 25, 25), (60, 55, 50)),
 _FINISH = (("ENIG (Gold)", (225, 185, 95)), ("HASL (Silver)", (200, 200, 200)))
 _DEF_MASK = 2
 _DEF_FINISH = 1
+_WHITE = next(i for i, m in enumerate(_MASKS) if m[0] == "White")
 _LAYER_CHOICES = ("Copper", "Silkscreen", "Solder Mask", "Copper and Solder Mask")
 _LAYER_MAP = ((0,), (1,), (2,), (0, 2))
 _FR4 = (205, 180, 140)
@@ -205,6 +209,11 @@ if wx:
 
     _GRAVEYARD = []
 
+    def _group_id(item):
+        # KiCad 10 returns an EDA_GROUP, which has no m_Uuid of its own.
+        pg = item.GetParentGroup()
+        return pg and getattr(pg, "AsEdaItem", lambda: pg)().m_Uuid.AsString()
+
     class Img2SilkDialog(wx.Dialog):
         def __init__(self, parent, board):
             super().__init__(parent, title="Img2Silk")
@@ -213,6 +222,7 @@ if wx:
             self.replace = None
             self.center = None
             self.ref_uuid = None
+            self._mask_before = None
             self._ref_geom = None
             self._ref_good = None
             self._ref_shown = None
@@ -237,7 +247,7 @@ if wx:
             previews.Add(self.preview_bw, 0)
             s.Add(previews, 0, wx.ALL | wx.ALIGN_CENTER, 10)
 
-            grid = wx.FlexGridSizer(14, 2, 5, 5)
+            grid = wx.FlexGridSizer(15, 2, 5, 5)
             grid.AddGrowableCol(1)
             grid.Add(wx.StaticText(self, label="Dithering algorithm:"), 0, wx.ALIGN_CENTER_VERTICAL)
             self.dither = wx.Choice(self, choices=[n for n, _ in _ALGOS])
@@ -293,6 +303,15 @@ if wx:
             self.five.Disable()
             self.five.Bind(wx.EVT_CHECKBOX, self.on_5c)
             grid.Add(self.five, 0, wx.ALIGN_CENTER_VERTICAL)
+            grid.Add((0, 0))
+            self.jlc = wx.CheckBox(self, label="JLCPCB multi-color silkscreen")
+            self.jlc.SetToolTip(
+                "Keeps the image in full color for JLCPCB's UV-printed "
+                "multi-color silkscreen, which needs a white board. It is shown "
+                "on the board as a reference image and is not plotted to Gerbers.")
+            self.jlc.Disable()
+            self.jlc.Bind(wx.EVT_CHECKBOX, self.on_jlc)
+            grid.Add(self.jlc, 0, wx.ALIGN_CENTER_VERTICAL)
             grid.Add((0, 0))
             grid.Add(wx.StaticText(self, label="Multi-color PCB layers:"), 0, wx.ALIGN_CENTER_VERTICAL)
             self.mc_layers = wx.Choice(self, choices=[
@@ -362,9 +381,9 @@ if wx:
             target = next((g for g in groups if g.IsSelected()), None)
             if target is None:
                 for d in self.board.GetDrawings():
-                    pg = d.GetParentGroup()
-                    if pg and d.IsSelected() and pg.m_Uuid.AsString() in uids:
-                        target = uids[pg.m_Uuid.AsString()]
+                    gid = _group_id(d)
+                    if gid in uids and d.IsSelected():
+                        target = uids[gid]
                         break
             if target is not None:
                 self._load_group(target)
@@ -398,13 +417,14 @@ if wx:
             self.outline_layer.SetSelection(cfg.get("olay", 1))
             self.outline_layer.Enable(self.outline.GetValue())
             self.five.SetValue(cfg.get("5c", False))
+            self.jlc.SetValue(cfg.get("jlc", False))
             self.mc_layers.SetSelection(cfg.get("mcl", 0))
             self.mask_col.SetSelection(cfg.get("mask", _DEF_MASK))
             self.finish.SetSelection(cfg.get("fin", _DEF_FINISH))
             self.length.ChangeValue("%g" % cfg["len"])
             self.width.ChangeValue("%g" % cfg["wid"])
             self.btn_create.SetLabel("Update Graphics")
-            self.on_5c(None)
+            self.on_jlc(None)
 
         def on_import(self, _):
             with wx.FileDialog(self, "Choose an image",
@@ -444,9 +464,10 @@ if wx:
             self.outline.Enable()
             self.outline_layer.Enable(self.outline.GetValue())
             self.five.Enable()
+            self.jlc.Enable()
             self.length.ChangeValue("50")
             self.width.ChangeValue("%.2f" % (50.0 * self._aspect))
-            self.update_bw()
+            self.on_jlc(None)
             self.Fit()
             self.Layout()
             return True
@@ -581,13 +602,28 @@ if wx:
 
         def on_5c(self, _):
             f = self.five.GetValue()
+            j = self.jlc.GetValue()
             self.mc_layers.Enable(f)
             self.mask_col.Enable(f)
             self.finish.Enable(f and self.mc_layers.GetSelection() == 0)
-            self.layer.Enable(not f)
-            self.outline.Enable(not f)
-            self.outline_layer.Enable(not f and self.outline.GetValue())
+            self.layer.Enable(not f and not j)
+            self.outline.Enable(not f and not j)
+            self.outline_layer.Enable(not f and not j and self.outline.GetValue())
             self.update_bw()
+
+        def on_jlc(self, _):
+            j = self.jlc.GetValue()
+            if j:
+                self.five.SetValue(False)
+                if self._mask_before is None:
+                    self._mask_before = self.mask_col.GetSelection()
+                self.mask_col.SetSelection(_WHITE)
+            elif self._mask_before is not None:
+                self.mask_col.SetSelection(self._mask_before)
+                self._mask_before = None
+            for c in (self.five, self.dither, self.threshold, self.invert):
+                c.Enable(not j)
+            self.on_5c(None)
 
         def on_dot_size(self, _):
             self.dot_val.SetLabel("%.2f" % (self.dot_size.GetValue() / 100.0))
@@ -602,6 +638,10 @@ if wx:
 
         def update_bw(self, _=None):
             if self.image is None:
+                return
+            if self.jlc.GetValue():
+                self.dot_size.Disable()
+                self.preview_bw.SetBitmap(wx.Bitmap(self._jlc_preview()))
                 return
             algo = _ALGOS[self.dither.GetSelection()][1]
             self.dot_size.Enable(algo != 0)
@@ -637,6 +677,24 @@ if wx:
             bw.Rescale(max(1, int(w_px * k)), max(1, int(h_px * k)),
                        wx.IMAGE_QUALITY_HIGH if k < 1 else wx.IMAGE_QUALITY_NORMAL)
             self.preview_bw.SetBitmap(wx.Bitmap(bw))
+
+        def _jlc_preview(self):
+            length, width = self._mm(self.length), self._mm(self.width)
+            aspect = width / length if length and width else self._aspect
+            w = max(1, int(min(280.0, 280.0 / aspect)))
+            h = max(1, int(min(280.0, 280.0 * aspect)))
+            img = self.image.Scale(w, h, wx.IMAGE_QUALITY_HIGH)
+            if not img.HasAlpha():
+                return img
+            bg = _MASKS[_WHITE][1]
+            rgb, alpha = bytes(img.GetData()), bytes(img.GetAlpha())
+            out = bytearray(rgb)
+            for i, a in enumerate(alpha):
+                if a < 255:
+                    for ch in range(3):
+                        out[i * 3 + ch] = (rgb[i * 3 + ch] * a
+                                           + bg[ch] * (255 - a)) // 255
+            return wx.Image(w, h, bytes(out))
 
         def _levels5(self, grey, alpha, w_px, h_px):
             pal = _palette5(self.mask_col.GetSelection(),
@@ -678,14 +736,22 @@ if wx:
                     return
                 cx, cy = self._board_center()
 
-            algo = _ALGOS[self.dither.GetSelection()][1]
             busy = wx.BusyCursor()
+            back = self.side.GetSelection() == 1
+            if self.jlc.GetValue():
+                self._replace_group()
+                self._add_image(self._new_group(length, width),
+                                length, width, cx, cy, back)
+                pcbnew.Refresh()
+                self.Close()
+                return
+
+            algo = _ALGOS[self.dither.GetSelection()][1]
             w_px, h_px = self._out_grid(algo != 0, length, width)
             img = self.image.ConvertToGreyscale()
             img.Rescale(w_px, h_px, wx.IMAGE_QUALITY_HIGH)
             grey = bytes(img.GetData())
             alpha = bytes(img.GetAlphaBuffer()) if img.HasAlpha() else None
-            back = self.side.GetSelection() == 1
             layers = ((pcbnew.B_Cu, pcbnew.B_SilkS, pcbnew.B_Mask) if back
                       else (pcbnew.F_Cu, pcbnew.F_SilkS, pcbnew.F_Mask))
             if self.five.GetValue():
@@ -720,11 +786,23 @@ if wx:
                     % total, "Img2Silk", wx.YES_NO | wx.ICON_WARNING) != wx.YES:
                 return
 
+            self._replace_group()
+            xs = [pcbnew.FromMM(x0 + i * length / w_px) for i in range(w_px + 1)]
+            ys = [pcbnew.FromMM(y0 + i * width / h_px) for i in range(h_px + 1)]
+            if back:
+                xs.reverse()
+            group = self._new_group(length, width)
+            for layer, rects in jobs:
+                if rects:
+                    self._add_polys(group, rects, xs, ys, layer)
+            pcbnew.Refresh()
+            self.Close()
+
+        def _replace_group(self):
             self._del_ref()
             if self.replace:
                 old = [d for d in self.board.GetDrawings()
-                       if d.GetParentGroup()
-                       and d.GetParentGroup().m_Uuid.AsString() == self.replace]
+                       if _group_id(d) == self.replace]
                 for d in old:
                     self._remove(d)
                 for g in self.board.Groups():
@@ -732,10 +810,7 @@ if wx:
                         self._remove(g)
                         break
 
-            xs = [pcbnew.FromMM(x0 + i * length / w_px) for i in range(w_px + 1)]
-            ys = [pcbnew.FromMM(y0 + i * width / h_px) for i in range(h_px + 1)]
-            if back:
-                xs.reverse()
+        def _new_group(self, length, width):
             group = pcbnew.PCB_GROUP(self.board)
             group.SetName("Img2Silk|" + json.dumps(
                 {"img": self.img_path, "algo": self.dither.GetSelection(),
@@ -745,16 +820,45 @@ if wx:
                  "ol": self.outline.GetValue(),
                  "olay": self.outline_layer.GetSelection(),
                  "5c": self.five.GetValue(),
+                 "jlc": self.jlc.GetValue(),
                  "mcl": self.mc_layers.GetSelection(),
                  "mask": self.mask_col.GetSelection(),
                  "fin": self.finish.GetSelection(),
                  "len": length, "wid": width}))
             self.board.Add(group)
-            for layer, rects in jobs:
-                if rects:
-                    self._add_polys(group, rects, xs, ys, layer)
-            pcbnew.Refresh()
-            self.Close()
+            return group
+
+        def _add_image(self, group, length, width, cx, cy, back):
+            # pcbnew can't load pixels into a PCB_REFERENCE_IMAGE from Python,
+            # so parse a one-item board file and move its image over. Reference
+            # images are never plotted, so the Gerbers stay untouched.
+            ppmm = min(PX_PER_MM, MAX_PX / max(length, width))
+            w_px = max(1, int(round(length * ppmm)))
+            h_px = max(1, int(round(width * ppmm)))
+            img = self.image.Scale(w_px, h_px, wx.IMAGE_QUALITY_HIGH)
+            if back:
+                img = img.Mirror()
+            img.SetOption(wx.IMAGE_OPTION_RESOLUTIONUNIT, wx.IMAGE_RESOLUTION_INCHES)
+            img.SetOption(wx.IMAGE_OPTION_RESOLUTION, _IMG_PPI)
+            with tempfile.TemporaryDirectory() as tmp:
+                png = os.path.join(tmp, "img.png")
+                img.SaveFile(png, wx.BITMAP_TYPE_PNG)
+                with open(png, "rb") as f:
+                    data = base64.b64encode(f.read()).decode()
+                pcb = os.path.join(tmp, "img.kicad_pcb")
+                with open(pcb, "w") as f:
+                    f.write('(kicad_pcb (version 20240108) (generator "img2silk")'
+                            ' (image (at %.4f %.4f) (layer "%s") (scale %.6f)'
+                            ' (data %s)))' % (
+                                cx, cy, "B.SilkS" if back else "F.SilkS",
+                                length * _IMG_PPI / 25.4 / w_px,
+                                " ".join('"%s"' % data[i:i + 76]
+                                         for i in range(0, len(data), 76))))
+                src = pcbnew.PCB_IO_MGR.Load(pcbnew.PCB_IO_MGR.KICAD_SEXP, pcb)
+            item = next(iter(src.GetDrawings()))
+            src.Remove(item)
+            self.board.Add(item)
+            group.AddItem(item)
 
         def _add_polys(self, group, rects, xs, ys, layer):
             for i in range(0, len(rects), 2000):
