@@ -241,7 +241,7 @@ if wx:
             grid.AddGrowableCol(1)
             grid.Add(wx.StaticText(self, label="Dithering algorithm:"), 0, wx.ALIGN_CENTER_VERTICAL)
             self.dither = wx.Choice(self, choices=[n for n, _ in _ALGOS])
-            self.dither.SetSelection(4)
+            self.dither.SetSelection(0)
             self.dither.Disable()
             self.dither.Bind(wx.EVT_CHOICE, self.update_bw)
             grid.Add(self.dither, 1, wx.EXPAND)
