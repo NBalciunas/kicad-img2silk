@@ -934,8 +934,8 @@ if wx:
                 return
             del busy
             wx.MessageBox("Wrote the JLCPCB multi-color silkscreen files to:\n%s\n\n"
-                          "Put the four Fabrication_Colorful* files into your "
-                          "Gerber zip. The preview folder only shows what will "
+                          "Put the four files (.FCTS, .FCBS, .FCBO and .FCBM) "
+                          "into your Gerber zip. The preview folder only shows what will "
                           "be printed (grey is not printed) and does not go into "
                           "the zip."
                           % folder, "Img2Silk", wx.ICON_INFORMATION)
