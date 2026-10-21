@@ -1,17 +1,19 @@
 """
 JLCPCB / EasyEDA Pro multi-color silkscreen export.
 
-Everything here mirrors EasyEDA Pro 3.2.149's pcb.js:
-  * .FCTS / .FCBS / .FCBO are SVGs wrapped as
+This module makes the same files as EasyEDA Pro 3.2.149 (pcb.js):
+  * The .FCTS, .FCBS and .FCBO files contain an encrypted SVG:
         RSA-OAEP-SHA256(aes_key) || RSA-OAEP-SHA256(aes_iv) || AES-128-GCM(svg)
-    with a random 16-byte key and IV and JLCPCB's RSA-2048 public key. KiCad's
-    bundled Python has no crypto library, so AES-GCM and OAEP use hashlib only.
-  * .FCBM is a Gerber with the board shape and three alignment marks (wYe),
-    EasyEDA's header and its hash aperture (addHashApertureToGerber), marked as
-    a design imported from another tool.
-The files are meant to be added to a normal Gerber zip.
-Units: EasyEDA works in 10 mil. SVG y equals KiCad y (both point down), Gerber
-and mark-point y are negated.
+    The AES key and the IV are random 16-byte values. The RSA key is the
+    JLCPCB RSA-2048 public key. The KiCad Python does not include a crypto
+    library. Thus, this module does AES-GCM and OAEP with hashlib only.
+  * The .FCBM file is a Gerber file. It contains the board shape, three
+    alignment marks (wYe), the EasyEDA header and the EasyEDA hash aperture
+    (addHashApertureToGerber). The hash marks the design as imported from
+    another tool.
+Add these files to the normal Gerber zip file.
+Units: EasyEDA uses a unit of 10 mil. In the SVG, the y axis points down, as in
+KiCad. In the Gerber file and in the mark points, the y axis points up.
 """
 import base64
 import datetime
@@ -31,7 +33,7 @@ SVG_EDA_VERSION = "2.4(2026-05-08)"
 OBJECT_CONFIGS = ("Pad,Via,Track,Text,Image,Dimension,BoardOutline,BoardCutout,"
                   "CopperFilled,SolidRegion,FPCStiffener,Line,PlaneZone,"
                   "ComponentProperty,ComponentSilkscreen,TearDrop")
-IMPORTED = "494d"     # EasyEDA's hash prefix for designs imported from other tools
+IMPORTED = "494d"     # EasyEDA hash prefix for designs from other tools
 UNIT_MM = 0.254
 BOARD_COLOR = "#FFFFFF"
 SILK_COLOR = "#000000"
@@ -39,7 +41,7 @@ OUTLINE_INSET_MM = 0.2
 MARK_INSET_MM = 3 * UNIT_MM
 _APERTURE_MAX = 8191
 
-# JLCPCB's public key from EasyEDA Pro's pcb.js (tools/jlc_colorsilk_test.py has the PEM).
+# JLCPCB RSA-2048 public key (modulus and exponent) from the EasyEDA Pro pcb.js file.
 _JLC_E = 65537
 _JLC_N = int(
     "ccfb6e52a25e71a47fc16b5cb464fc42e56c9660c7dd4b77b3c7352ece00f8cf"
@@ -96,7 +98,7 @@ def _expand_key(key):
 
 
 def _aes_block(rk, block):
-    """AES-128 encrypt one block given as a 128-bit int; returns an int."""
+    """Encrypt one 128-bit block with AES-128. The block and the result are integers."""
     T0, T1, T2, T3, S = _T0, _T1, _T2, _T3, _S
     s0 = (block >> 96) ^ rk[0]
     s1 = ((block >> 64) & 0xffffffff) ^ rk[1]
@@ -117,7 +119,8 @@ def _aes_block(rk, block):
 
 
 def _ghash_table(h):
-    """4096-entry table so X*H in GF(2^128) is 16 lookups (one per byte of X)."""
+    """Make a 4096-entry table. With this table, X*H in GF(2^128) needs only 16 lookups
+    (one lookup for each byte of X)."""
     basis = []
     v = h
     for _ in range(128):
@@ -142,7 +145,8 @@ def _ghash(table, data, acc=0):
 
 
 def aes_gcm_encrypt(key, iv, plain):
-    """AES-128-GCM, no AAD. Returns ciphertext || 16-byte tag (WebCrypto layout)."""
+    """Encrypt with AES-128-GCM without AAD. Return the ciphertext followed by the
+    16-byte tag (WebCrypto layout)."""
     rk = _expand_key(key)
     table = _ghash_table(_aes_block(rk, 0))
     if len(iv) == 12:
@@ -171,7 +175,7 @@ def _xor(a, b):
 
 
 def rsa_oaep_encrypt(msg, n=_JLC_N, e=_JLC_E, seed=None):
-    """RSA-OAEP with SHA-256 for both the hash and MGF1, empty label."""
+    """Encrypt with RSA-OAEP. Use SHA-256 for the hash and for MGF1. Use an empty label."""
     k = (n.bit_length() + 7) // 8
     db = hashlib.sha256(b"").digest() + bytes(k - len(msg) - 66) + b"\x01" + msg
     seed = seed or os.urandom(32)
@@ -181,18 +185,19 @@ def rsa_oaep_encrypt(msg, n=_JLC_N, e=_JLC_E, seed=None):
 
 
 def encrypt(plain):
-    """Wrap SVG bytes into the .FCTS/.FCBS format."""
+    """Put the SVG bytes into the .FCTS/.FCBS format."""
     key, iv = os.urandom(16), os.urandom(16)
     return rsa_oaep_encrypt(key) + rsa_oaep_encrypt(iv) + aes_gcm_encrypt(key, iv, plain)
 
 
 def _js_fixed2(s):
-    """JavaScript's (+s).toFixed(2): half-up on the exact double value."""
+    """Round as (+s).toFixed(2) in JavaScript. Round half up on the exact double value."""
     return str(Decimal(float(s)).quantize(Decimal("0.01"), ROUND_HALF_UP))
 
 
 def add_hash_aperture(text, prefix=IMPORTED, rnd=random):
-    """Port of EasyEDA's addHashApertureToGerber. Aperture selects must be G54Dnn."""
+    """Add the EasyEDA hash aperture (port of addHashApertureToGerber).
+    The aperture selects must have the G54Dnn format."""
     lines = text.split("\n")
     ad_lines, ad_nums, found = [], [], False
     for g, line in enumerate(lines):
@@ -246,7 +251,7 @@ def add_hash_aperture(text, prefix=IMPORTED, rnd=random):
 
 
 def check_hash_aperture(text, prefix=IMPORTED):
-    """Aperture lines whose size digits match the hash of the rest of the file."""
+    """Find the aperture lines with size digits that agree with the hash of the remaining file."""
     lines = text.split("\n")
     hits = []
     for i, line in enumerate(lines):
@@ -265,7 +270,7 @@ def _n(v):
 
 
 def _chains(ps):
-    """Every outline and hole of a SHAPE_POLY_SET as a list of (x, y) mm points."""
+    """Get each outline and each hole of a SHAPE_POLY_SET as a list of (x, y) points in mm."""
     out = []
     for i in range(ps.OutlineCount()):
         for c in [ps.COutline(i)] + [ps.Hole(i, k) for k in range(ps.HoleCount(i))]:
@@ -297,7 +302,7 @@ def board_outline(board):
     ps = pcbnew.SHAPE_POLY_SET()
     try:
         ok = board.GetBoardPolygonOutlines(ps)
-    except TypeError:  # KiCad 10 added aInferOutlineIfNecessary
+    except TypeError:  # KiCad 10 added the aInferOutlineIfNecessary parameter.
         ok = board.GetBoardPolygonOutlines(ps, False)
     if not ok or ps.OutlineCount() == 0:
         raise ValueError("The board needs a closed outline on Edge.Cuts.")
@@ -305,19 +310,21 @@ def board_outline(board):
 
 
 def pick_marks(pts):
-    """EasyEDA's wYe intent: distinct bottom-left, top-left, top-right points (y up).
-    Its own loop depends on point order, so this picks by key instead."""
+    """Find three different points: bottom-left, top-left and top-right (y axis up).
+    The EasyEDA function wYe has the same purpose. But its loop gives a different
+    result for a different point order. Thus, this function selects the points by key."""
     c = min(pts, key=lambda p: (p[0], p[1]))
     h = min((p for p in pts if p != c), key=lambda p: (p[0], -p[1]))
     u = max((p for p in pts if p not in (c, h)), key=lambda p: (p[0], p[1]))
-    if h[1] < c[1]:  # only one leftmost point: use the topmost one instead
+    if h[1] < c[1]:  # Only one point is at the left side. Use the highest point.
         h = max((p for p in pts if p != c), key=lambda p: (p[1], -p[0]))
         u = max((p for p in pts if p not in (c, h)), key=lambda p: (p[0], p[1]))
     return [c, h, u]
 
 
 def _marks(outline):
-    """Mark points in EasyEDA units with y up, as the SVG's mark-points attribute wants."""
+    """Get the mark points in EasyEDA units with the y axis up.
+    The SVG mark-points attribute uses this format."""
     return pick_marks([(round(x / UNIT_MM, 4), round(-y / UNIT_MM, 4))
                        for chain in _chains(_inflated(outline, -MARK_INSET_MM)) for x, y in chain])
 
@@ -337,7 +344,7 @@ def _header(layer, stamp, layer_cfg):
 
 
 def _gxy(x, y):
-    """KiCad mm -> Gerber 4.5 coordinates (y up)."""
+    """Change KiCad mm to Gerber 4.5 coordinates (y axis up)."""
     return "X%dY%d" % (round(x * 1e5), round(-y * 1e5))
 
 
@@ -370,14 +377,16 @@ def _svg_head(box, marks):
 
 
 def _side(board, outline, back):
-    """Printable area (outline inset, minus mask openings) and silkscreen of one side."""
+    """Get the printable area and the silkscreen of one side.
+    The printable area is the inset outline without the mask openings."""
     printable = _inflated(outline, -OUTLINE_INSET_MM)
     printable.BooleanSubtract(_layer_polys(board, pcbnew.B_Mask if back else pcbnew.F_Mask))
     return printable, _layer_polys(board, pcbnew.B_SilkS if back else pcbnew.F_SilkS)
 
 
 def build_svg(outline, marks, printable, silk, images, back):
-    """Colour silkscreen for one side. images: (png_bytes, w_px, h_px, x, y, w, h mm, back)."""
+    """Make the color silkscreen SVG for one side.
+    Each image is (png_bytes, w_px, h_px, x, y, w, h in mm, back)."""
     bb = outline.BBox()
     box = (pcbnew.ToMM(bb.GetX()) / UNIT_MM, pcbnew.ToMM(bb.GetY()) / UNIT_MM,
            pcbnew.ToMM(bb.GetWidth()) / UNIT_MM, pcbnew.ToMM(bb.GetHeight()) / UNIT_MM)
@@ -404,7 +413,8 @@ def build_svg(outline, marks, printable, silk, images, back):
 
 
 def render_png(path, outline, printable, silk, images, back):
-    """Preview of what build_svg prints, seen from that side. Grey = not printed."""
+    """Make a PNG preview of the build_svg print, as seen from that side.
+    The printer does not print the grey areas."""
     import io
     import wx
     bb = outline.BBox()
@@ -465,8 +475,9 @@ def _layer_cfg(board):
 
 
 def export_files(board, folder, images):
-    """Write the four colour-silkscreen files into a new folder, plus PNG previews in
-    folder/preview. The four files go into the Gerber zip next to the normal Gerbers."""
+    """Write the four color silkscreen files into a new folder.
+    Write the PNG previews into folder/preview.
+    Add the four files to the Gerber zip file with the normal Gerber files."""
     stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     outline = board_outline(board)
     marks = _marks(outline)
@@ -489,14 +500,15 @@ def export_files(board, folder, images):
 
 if __name__ == "__main__":
     h = bytes.fromhex
-    # FIPS-197 appendix C.1
+    # Test vector from FIPS-197, appendix C.1.
     assert _aes_block(_expand_key(h("000102030405060708090a0b0c0d0e0f")),
                       0x00112233445566778899aabbccddeeff) == 0x69c4e0d86a7b0430d8cdb78070b4c55a
-    # GCM spec test cases 1 and 2
+    # Test cases 1 and 2 from the GCM specification.
     assert aes_gcm_encrypt(bytes(16), bytes(12), b"") == h("58e2fccefa7e3061367f1d57a4e7455a")
     assert aes_gcm_encrypt(bytes(16), bytes(12), bytes(16)) == h(
         "0388dace60b6a392f328c2b971b2fe78ab6e47d42cec13bdf53a67b21257bddf")
-    # OAEP padding: with e=1 the "ciphertext" is the encoded message, so unpad it.
+    # OAEP padding: with e=1, the "ciphertext" is the encoded message.
+    # Remove the padding and compare the result.
     em = rsa_oaep_encrypt(b"hello", e=1, seed=bytes(range(32)))
     assert em[0] == 0 and len(em) == 256
     seed = _xor(em[1:33], _mgf1(em[33:], 32))
@@ -505,7 +517,8 @@ if __name__ == "__main__":
     assert db[:32] == hashlib.sha256(b"").digest()
     assert db[32:].lstrip(b"\x00") == b"\x01hello"
     assert len(encrypt(b"x" * 100)) == 512 + 100 + 16
-    # Hash aperture: one verifiable line, both the append and the renumber branch.
+    # Hash aperture: make sure that each file has one correct hash line.
+    # Test the append branch and the renumber branch.
     for count in (2, 9):
         aps = "".join("%%ADD%dC,0.%d*%%\n" % (10 + i, i + 1) for i in range(count))
         sel = "".join("G54D%d*\nX0Y0D03*\n" % (10 + i) for i in range(count))
@@ -515,11 +528,11 @@ if __name__ == "__main__":
             assert len(check_hash_aperture(out)) == 1, (count, seed)
             assert len(re.findall(r"^%ADD", out, re.M)) == count + 1
     assert _js_fixed2("0.125") == "0.13" and _js_fixed2("0.5") == "0.50"
-    # Marks on a rectangle (y up): bottom-left, top-left, top-right.
+    # Marks on a rectangle (y axis up): bottom-left, top-left and top-right.
     rect = [(0, 0), (10, 0), (10, 5), (0, 5), (5, 0), (0, 2)]
     for i in range(len(rect)):
         for pts in (rect[i:] + rect[:i], (rect[i:] + rect[:i])[::-1]):
             assert pick_marks(pts) == [(0, 0), (0, 5), (10, 5)], i
-    diamond = [(0, 0), (5, 5), (10, 0), (5, -5)]  # single leftmost point
+    diamond = [(0, 0), (5, 5), (10, 0), (5, -5)]  # Only one point is at the left side.
     assert pick_marks(diamond) == [(0, 0), (5, 5), (10, 0)]
     print("self-check ok")

@@ -226,7 +226,8 @@ if wx:
                 return f.read()
 
     def _group_id(item):
-        # KiCad 10 returns an EDA_GROUP, which has no m_Uuid of its own.
+        # KiCad 10 returns an EDA_GROUP. An EDA_GROUP does not have an m_Uuid.
+        # Use AsEdaItem() to get the item with the m_Uuid.
         pg = item.GetParentGroup()
         return pg and getattr(pg, "AsEdaItem", lambda: pg)().m_Uuid.AsString()
 
@@ -637,7 +638,7 @@ if wx:
 
         def on_jlc(self, _):
             j = self.jlc.GetValue()
-            # JLCPCB only offers the color print on white boards with ENIG.
+            # The JLCPCB color print is available only for white boards with ENIG.
             if j:
                 self.five.SetValue(False)
                 if self._jlc_before is None:
@@ -857,9 +858,10 @@ if wx:
             return group
 
         def _add_image(self, group, length, width, cx, cy, back):
-            # pcbnew can't load pixels into a PCB_REFERENCE_IMAGE from Python,
-            # so parse a one-item board file and move its image over. Reference
-            # images are never plotted, so the Gerbers stay untouched.
+            # The pcbnew Python API cannot load an image into a PCB_REFERENCE_IMAGE.
+            # Thus, write a board file that contains only the image.
+            # Load this file and move the image to this board.
+            # KiCad does not plot reference images to the Gerber files.
             ppmm = min(PX_PER_MM, MAX_PX / max(length, width))
             w_px = max(1, int(round(length * ppmm)))
             h_px = max(1, int(round(width * ppmm)))
