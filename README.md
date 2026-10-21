@@ -7,6 +7,7 @@
 - Import and convert images to silkscreen, copper, or solder mask directly in KiCad.
 - Five conversion algorithms: Atkinson, Bayer 8×8, Floyd–Steinberg, and Random dithering for photos and gradients, plus Threshold for logos and line art.
 - Multi-color graphic mode that dithers the image using the board itself as a palette. Shades are built by stacking silkscreen, copper, and solder mask openings.
+- Prepare color files for JLCPCB's "EasyEDA multi-color silkscreen" option.
 - Live preview that shows exactly how the image will look on the board.
 - Adjust size, black / white threshold, dither dot size, and other settings before placing the image.
 - No external image editor required.
@@ -49,6 +50,13 @@
 4) Click **Update Graphics**. The old graphic is replaced in place.
 
 #### Side note: The source image file must still exist at its original location.
+
+### JLCPCB full-color printing (EasyEDA multi-color silkscreen)
+
+1) Import an image, tick **JLCPCB multi-color silkscreen** and click **Insert Graphics**. The image is placed in full color as a preview only, so it doesn't show up in the Gerbers.
+2) Once all color graphics are placed, click **Export JLCPCB Files**. A new `JLCPCB_color_...` folder is created next to the board, with four files and a `preview` folder showing the print.
+3) Plot your Gerbers and drill files as usual, then zip them together with the four exported files (without the `preview` folder).
+4) Upload the zip to JLCPCB and select **EasyEDA multi-color silkscreen** (requires white PCB color and ENIG surface finish).
 
 ## Examples
 

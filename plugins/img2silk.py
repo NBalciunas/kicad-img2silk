@@ -1,4 +1,5 @@
 import base64
+import datetime
 import json
 import os
 import random
@@ -10,10 +11,17 @@ try:
 except ImportError:
     pcbnew = wx = None
 
+try:
+    from . import jlc_colorsilk
+except ImportError:
+    import jlc_colorsilk
+
 MAX_PX = 1000
 PX_PER_MM = 10.0
 DOT_MAX_PX = 400
 _IMG_PPI = 300
+_PRINT_PX_PER_MM = 20
+_PRINT_MAX_PX = 4000
 
 _KERNELS = {
     1: (16, ((1, 0, 7), (-1, 1, 3), (0, 1, 5), (1, 1, 1))),
@@ -131,6 +139,7 @@ _FINISH = (("ENIG (Gold)", (225, 185, 95)), ("HASL (Silver)", (200, 200, 200)))
 _DEF_MASK = 2
 _DEF_FINISH = 1
 _WHITE = next(i for i, m in enumerate(_MASKS) if m[0] == "White")
+_ENIG = next(i for i, f in enumerate(_FINISH) if f[0].startswith("ENIG"))
 _LAYER_CHOICES = ("Copper", "Silkscreen", "Solder Mask", "Copper and Solder Mask")
 _LAYER_MAP = ((0,), (1,), (2,), (0, 2))
 _FR4 = (205, 180, 140)
@@ -209,6 +218,13 @@ if wx:
 
     _GRAVEYARD = []
 
+    def _png_bytes(img):
+        with tempfile.TemporaryDirectory() as tmp:
+            png = os.path.join(tmp, "img.png")
+            img.SaveFile(png, wx.BITMAP_TYPE_PNG)
+            with open(png, "rb") as f:
+                return f.read()
+
     def _group_id(item):
         # KiCad 10 returns an EDA_GROUP, which has no m_Uuid of its own.
         pg = item.GetParentGroup()
@@ -222,7 +238,7 @@ if wx:
             self.replace = None
             self.center = None
             self.ref_uuid = None
-            self._mask_before = None
+            self._jlc_before = None
             self._ref_geom = None
             self._ref_good = None
             self._ref_shown = None
@@ -232,7 +248,7 @@ if wx:
             self.timer.Start(300)
 
             s = wx.BoxSizer(wx.VERTICAL)
-            title = wx.StaticText(self, label="Img2Silk v1.3")
+            title = wx.StaticText(self, label="Img2Silk v1.4")
             title.SetFont(title.GetFont().Bold().Scaled(1.4))
             s.Add(title, 0, wx.ALL | wx.ALIGN_CENTER, 10)
 
@@ -306,13 +322,21 @@ if wx:
             grid.Add((0, 0))
             self.jlc = wx.CheckBox(self, label="JLCPCB multi-color silkscreen")
             self.jlc.SetToolTip(
-                "Keeps the image in full color for JLCPCB's UV-printed "
-                "multi-color silkscreen, which needs a white board. It is shown "
-                "on the board as a reference image and is not plotted to Gerbers.")
+                "Keeps the image in full color for JLCPCB's \"EasyEDA "
+                "multi-color silkscreen\" option, which needs a white board. It "
+                "is shown on the board as a reference image and is not plotted "
+                "to Gerbers.")
             self.jlc.Disable()
             self.jlc.Bind(wx.EVT_CHECKBOX, self.on_jlc)
             grid.Add(self.jlc, 0, wx.ALIGN_CENTER_VERTICAL)
-            grid.Add((0, 0))
+            btn_export = wx.Button(self, label="Export JLCPCB Files")
+            btn_export.SetToolTip(
+                "Only generates the JLCPCB multi-color silkscreen files "
+                "(.FCTS, .FCBS, .FCBO and .FCBM) in a new folder next to the "
+                "board. It does not make Gerbers: plot those as usual, then put "
+                "these files into the Gerber zip before uploading it to JLCPCB.")
+            btn_export.Bind(wx.EVT_BUTTON, self.on_export)
+            grid.Add(btn_export, 1, wx.EXPAND)
             grid.Add(wx.StaticText(self, label="Multi-color PCB layers:"), 0, wx.ALIGN_CENTER_VERTICAL)
             self.mc_layers = wx.Choice(self, choices=[
                 "Silkscreen, Copper and Solder Mask (5 Colors)",
@@ -613,14 +637,18 @@ if wx:
 
         def on_jlc(self, _):
             j = self.jlc.GetValue()
+            # JLCPCB only offers the color print on white boards with ENIG.
             if j:
                 self.five.SetValue(False)
-                if self._mask_before is None:
-                    self._mask_before = self.mask_col.GetSelection()
+                if self._jlc_before is None:
+                    self._jlc_before = (self.mask_col.GetSelection(),
+                                        self.finish.GetSelection())
                 self.mask_col.SetSelection(_WHITE)
-            elif self._mask_before is not None:
-                self.mask_col.SetSelection(self._mask_before)
-                self._mask_before = None
+                self.finish.SetSelection(_ENIG)
+            elif self._jlc_before is not None:
+                self.mask_col.SetSelection(self._jlc_before[0])
+                self.finish.SetSelection(self._jlc_before[1])
+                self._jlc_before = None
             for c in (self.five, self.dither, self.threshold, self.invert):
                 c.Enable(not j)
             self.on_5c(None)
@@ -840,11 +868,8 @@ if wx:
                 img = img.Mirror()
             img.SetOption(wx.IMAGE_OPTION_RESOLUTIONUNIT, wx.IMAGE_RESOLUTION_INCHES)
             img.SetOption(wx.IMAGE_OPTION_RESOLUTION, _IMG_PPI)
+            data = base64.b64encode(_png_bytes(img)).decode()
             with tempfile.TemporaryDirectory() as tmp:
-                png = os.path.join(tmp, "img.png")
-                img.SaveFile(png, wx.BITMAP_TYPE_PNG)
-                with open(png, "rb") as f:
-                    data = base64.b64encode(f.read()).decode()
                 pcb = os.path.join(tmp, "img.kicad_pcb")
                 with open(pcb, "w") as f:
                     f.write('(kicad_pcb (version 20240108) (generator "img2silk")'
@@ -859,6 +884,77 @@ if wx:
             src.Remove(item)
             self.board.Add(item)
             group.AddItem(item)
+
+        def on_export(self, _):
+            images = []
+            for g in self.board.Groups():
+                try:
+                    cfg = json.loads(g.GetName().split("|", 1)[1])
+                except (ValueError, IndexError):
+                    continue
+                if not g.GetName().startswith("Img2Silk|") or not cfg.get("jlc"):
+                    continue
+                gid = g.m_Uuid.AsString()
+                item = next((d for d in self.board.GetDrawings()
+                             if _group_id(d) == gid
+                             and d.GetClass() == "PCB_REFERENCE_IMAGE"), None)
+                if item is None:
+                    continue
+                img = self._print_image(cfg, item)
+                if img is None:
+                    wx.MessageBox("Could not load the source image of a JLCPCB "
+                                  "multi-color graphic:\n%s" % cfg.get("img"),
+                                  "Img2Silk", wx.ICON_ERROR)
+                    return
+                images.append(img)
+            if not images:
+                wx.MessageBox("There is no JLCPCB multi-color silkscreen on this "
+                              "board.\nInsert a graphic with \"JLCPCB multi-color "
+                              "silkscreen\" ticked first.", "Img2Silk", wx.ICON_ERROR)
+                return
+            board_file = self.board.GetFileName()
+            parent = os.path.dirname(board_file)
+            if not parent:
+                with wx.DirDialog(self, "Where should the JLCPCB files go?") as dd:
+                    if dd.ShowModal() != wx.ID_OK:
+                        return
+                    parent = dd.GetPath()
+            name = os.path.splitext(os.path.basename(board_file))[0] or "PCB"
+            folder = os.path.join(parent, "JLCPCB_color_%s_%s" % (
+                name.replace(" ", "_"),
+                datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")))
+            busy = wx.BusyCursor()
+            try:
+                jlc_colorsilk.export_files(self.board, folder, images)
+            except Exception as e:
+                del busy
+                wx.MessageBox("Export failed:\n%s" % e, "Img2Silk", wx.ICON_ERROR)
+                return
+            del busy
+            wx.MessageBox("Wrote the JLCPCB multi-color silkscreen files to:\n%s\n\n"
+                          "Put the four Fabrication_Colorful* files into your "
+                          "Gerber zip. The preview folder only shows what will "
+                          "be printed (grey is not printed) and does not go into "
+                          "the zip."
+                          % folder, "Img2Silk", wx.ICON_INFORMATION)
+
+        def _print_image(self, cfg, item):
+            nolog = wx.LogNull()
+            img = wx.Image(cfg.get("img", ""))
+            del nolog
+            if not img.IsOk():
+                return None
+            bb = item.GetBoundingBox()
+            w_mm, h_mm = pcbnew.ToMM(bb.GetWidth()), pcbnew.ToMM(bb.GetHeight())
+            ppmm = min(_PRINT_PX_PER_MM, _PRINT_MAX_PX / max(w_mm, h_mm))
+            w_px = max(1, min(img.GetWidth(), int(round(w_mm * ppmm))))
+            h_px = max(1, min(img.GetHeight(), int(round(h_mm * ppmm))))
+            img = img.Scale(w_px, h_px, wx.IMAGE_QUALITY_HIGH)
+            back = cfg.get("side", 0) == 1
+            if back:
+                img = img.Mirror()
+            return (_png_bytes(img), w_px, h_px, pcbnew.ToMM(bb.GetX()),
+                    pcbnew.ToMM(bb.GetY()), w_mm, h_mm, back)
 
         def _add_polys(self, group, rects, xs, ys, layer):
             for i in range(0, len(rects), 2000):
