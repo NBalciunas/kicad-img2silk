@@ -33,7 +33,7 @@ SVG_EDA_VERSION = "2.4(2026-05-08)"
 OBJECT_CONFIGS = ("Pad,Via,Track,Text,Image,Dimension,BoardOutline,BoardCutout,"
                   "CopperFilled,SolidRegion,FPCStiffener,Line,PlaneZone,"
                   "ComponentProperty,ComponentSilkscreen,TearDrop")
-IMPORTED = "494d"     # EasyEDA hash prefix for designs from other tools
+IMPORTED = "494d"     # The EasyEDA hash prefix for designs from other tools.
 UNIT_MM = 0.254
 BOARD_COLOR = "#FFFFFF"
 SILK_COLOR = "#000000"

@@ -12,9 +12,10 @@ except ImportError:
     pcbnew = wx = None
 
 try:
-    from . import jlc_colorsilk
+    from . import jlc_colorsilk, trace_art
 except ImportError:
     import jlc_colorsilk
+    import trace_art
 
 MAX_PX = 1000
 PX_PER_MM = 10.0
@@ -142,6 +143,12 @@ _WHITE = next(i for i, m in enumerate(_MASKS) if m[0] == "White")
 _ENIG = next(i for i, f in enumerate(_FINISH) if f[0].startswith("ENIG"))
 _LAYER_CHOICES = ("Copper", "Silkscreen", "Solder Mask", "Copper and Solder Mask")
 _LAYER_MAP = ((0,), (1,), (2,), (0, 2))
+# These are the preview colors for each net of a trace art graphic.
+_NET_COLORS = ((190, 130, 20), (20, 120, 190), (200, 50, 50), (40, 150, 70),
+               (140, 70, 190), (220, 110, 20), (60, 80, 200), (150, 140, 20))
+# These are the directions in image coordinates. The y axis points down.
+_VIA_SIDES = (("Auto", None), ("Bottom", (0, 1)), ("Top", (0, -1)),
+              ("Left", (-1, 0)), ("Right", (1, 0)))
 _FR4 = (205, 180, 140)
 _SILK_WHITE = (250, 250, 250)
 
@@ -239,6 +246,7 @@ if wx:
             self.replace = None
             self.center = None
             self.ref_uuid = None
+            self._net_base = None
             self._jlc_before = None
             self._ref_geom = None
             self._ref_good = None
@@ -264,7 +272,7 @@ if wx:
             previews.Add(self.preview_bw, 0)
             s.Add(previews, 0, wx.ALL | wx.ALIGN_CENTER, 10)
 
-            grid = wx.FlexGridSizer(15, 2, 5, 5)
+            grid = wx.FlexGridSizer(0, 2, 5, 5)
             grid.AddGrowableCol(1)
             grid.Add(wx.StaticText(self, label="Dithering algorithm:"), 0, wx.ALIGN_CENTER_VERTICAL)
             self.dither = wx.Choice(self, choices=[n for n, _ in _ALGOS])
@@ -338,6 +346,69 @@ if wx:
                 "these files into the Gerber zip before uploading it to JLCPCB.")
             btn_export.Bind(wx.EVT_BUTTON, self.on_export)
             grid.Add(btn_export, 1, wx.EXPAND)
+            self.trace = wx.CheckBox(self, label="Trace art")
+            self.trace.SetToolTip(
+                "Draws the shape with parallel tracks one gap apart, like routed "
+                "PCB traces. On copper they are placed as real tracks and vias, "
+                "each on its own net. Thin parts such as whiskers branch off as "
+                "thin lines ending in a via, like test points.")
+            self.trace.Disable()
+            self.trace.Bind(wx.EVT_CHECKBOX, self.on_trace)
+            grid.Add(self.trace, 0, wx.ALIGN_CENTER_VERTICAL)
+            self.trace_style = wx.Choice(self, choices=["Follow outline", "Rows"])
+            self.trace_style.SetSelection(0)
+            self.trace_style.Disable()
+            self.trace_style.Bind(wx.EVT_CHOICE, self.on_5c)
+            grid.Add(self.trace_style, 1, wx.EXPAND)
+            grid.Add(wx.StaticText(self, label="Number of nets:"), 0, wx.ALIGN_CENTER_VERTICAL)
+            self.trace_nets = wx.SpinCtrl(self, min=1, max=200, initial=1)
+            self.trace_nets.SetToolTip(
+                "How many separate traces to make. Each one is a net with a via "
+                "at both ends. Parts of the image that do not touch, such as a "
+                "pupil inside an eye, always need a net of their own.")
+            self.trace_nets.Disable()
+            self.trace_nets.Bind(wx.EVT_SPINCTRL, self.update_bw)
+            self.trace_nets.Bind(wx.EVT_TEXT, self.update_bw)
+            grid.Add(self.trace_nets, 1, wx.EXPAND)
+            grid.Add(wx.StaticText(self, label="Tracks side by side:"), 0, wx.ALIGN_CENTER_VERTICAL)
+            self.trace_count = wx.SpinCtrl(self, min=0, max=200, initial=0)
+            self.trace_count.SetToolTip("How many tracks run side by side along "
+                                        "the outline. 0 fills the whole shape.")
+            self.trace_count.Disable()
+            self.trace_count.Bind(wx.EVT_SPINCTRL, self.update_bw)
+            self.trace_count.Bind(wx.EVT_TEXT, self.update_bw)
+            grid.Add(self.trace_count, 1, wx.EXPAND)
+            grid.Add(wx.StaticText(self, label="Track width / gap (mm):"), 0, wx.ALIGN_CENTER_VERTICAL)
+            tw_row = wx.BoxSizer(wx.HORIZONTAL)
+            self.track_w = wx.TextCtrl(self, value="0.2")
+            self.track_gap = wx.TextCtrl(self, value="0.2")
+            for c in (self.track_w, self.track_gap):
+                c.Disable()
+                c.Bind(wx.EVT_TEXT, self.update_bw)
+                tw_row.Add(c, 1, wx.EXPAND)
+            tw_row.InsertSpacer(1, 5)
+            grid.Add(tw_row, 1, wx.EXPAND)
+            grid.Add(wx.StaticText(self, label="Via diameter / drill (mm):"), 0, wx.ALIGN_CENTER_VERTICAL)
+            via_row = wx.BoxSizer(wx.HORIZONTAL)
+            self.via_d = wx.TextCtrl(self, value="0.6")
+            self.via_drill = wx.TextCtrl(self, value="0.3")
+            for c in (self.via_d, self.via_drill):
+                c.Disable()
+                c.Bind(wx.EVT_TEXT, self.update_bw)
+                via_row.Add(c, 1, wx.EXPAND)
+            via_row.InsertSpacer(1, 5)
+            grid.Add(via_row, 1, wx.EXPAND)
+            grid.Add(wx.StaticText(self, label="Via side:"), 0, wx.ALIGN_CENTER_VERTICAL)
+            self.via_side = wx.Choice(self, choices=[n for n, _ in _VIA_SIDES])
+            self.via_side.SetToolTip(
+                "Where the tracks leave the shape and the vias go. Tracks that "
+                "cannot reach that side leave on another side. Auto picks the "
+                "fewest exits. On the back side, the sides are as seen from "
+                "the back.")
+            self.via_side.SetSelection(0)
+            self.via_side.Disable()
+            self.via_side.Bind(wx.EVT_CHOICE, self.update_bw)
+            grid.Add(self.via_side, 1, wx.EXPAND)
             grid.Add(wx.StaticText(self, label="Multi-color PCB layers:"), 0, wx.ALIGN_CENTER_VERTICAL)
             self.mc_layers = wx.Choice(self, choices=[
                 "Silkscreen, Copper and Solder Mask (5 Colors)",
@@ -405,7 +476,7 @@ if wx:
             uids = {g.m_Uuid.AsString(): g for g in groups}
             target = next((g for g in groups if g.IsSelected()), None)
             if target is None:
-                for d in self.board.GetDrawings():
+                for d in list(self.board.GetDrawings()) + list(self.board.GetTracks()):
                     gid = _group_id(d)
                     if gid in uids and d.IsSelected():
                         target = uids[gid]
@@ -444,6 +515,16 @@ if wx:
             self.five.SetValue(cfg.get("5c", False))
             self.jlc.SetValue(cfg.get("jlc", False))
             self.mc_layers.SetSelection(cfg.get("mcl", 0))
+            self.trace.SetValue(cfg.get("tr", False))
+            self.trace_style.SetSelection(cfg.get("trs", 0))
+            self.track_w.ChangeValue("%g" % cfg.get("trw", 0.2))
+            self.track_gap.ChangeValue("%g" % cfg.get("trg", 0.2))
+            self.trace_count.SetValue(cfg.get("trn", 0))
+            self.trace_nets.SetValue(cfg.get("trk", 1))
+            self._net_base = cfg.get("trb")
+            self.via_d.ChangeValue("%g" % cfg.get("vd", 0.6))
+            self.via_drill.ChangeValue("%g" % cfg.get("vdr", 0.3))
+            self.via_side.SetSelection(cfg.get("vs", 0))
             self.mask_col.SetSelection(cfg.get("mask", _DEF_MASK))
             self.finish.SetSelection(cfg.get("fin", _DEF_FINISH))
             self.length.ChangeValue("%g" % cfg["len"])
@@ -490,6 +571,7 @@ if wx:
             self.outline_layer.Enable(self.outline.GetValue())
             self.five.Enable()
             self.jlc.Enable()
+            self.trace.Enable()
             self.length.ChangeValue("50")
             self.width.ChangeValue("%.2f" % (50.0 * self._aspect))
             self.on_jlc(None)
@@ -628,19 +710,39 @@ if wx:
         def on_5c(self, _):
             f = self.five.GetValue()
             j = self.jlc.GetValue()
+            if f:
+                self.trace.SetValue(False)
+            t = self.trace.GetValue()
             self.mc_layers.Enable(f)
             self.mask_col.Enable(f)
             self.finish.Enable(f and self.mc_layers.GetSelection() == 0)
             self.layer.Enable(not f and not j)
-            self.outline.Enable(not f and not j)
-            self.outline_layer.Enable(not f and not j and self.outline.GetValue())
+            self.outline.Enable(not f and not j and not t)
+            self.outline_layer.Enable(not f and not j and not t
+                                      and self.outline.GetValue())
+            self.dither.Enable(not j and not t)
+            for c in (self.trace_style, self.track_w, self.track_gap):
+                c.Enable(t)
+            style = self.trace_style.GetSelection()
+            self.trace_nets.Enable(t and style == 0)
+            self.trace_count.Enable(t and style == 0)
+            self.via_d.Enable(t)
+            self.via_drill.Enable(t)
+            self.via_side.Enable(t and style == 0)
             self.update_bw()
+
+        def on_trace(self, _):
+            if self.trace.GetValue():
+                self.five.SetValue(False)
+                self.jlc.SetValue(False)
+            self.on_jlc(None)
 
         def on_jlc(self, _):
             j = self.jlc.GetValue()
             # The JLCPCB color print is available only for white boards with ENIG.
             if j:
                 self.five.SetValue(False)
+                self.trace.SetValue(False)
                 if self._jlc_before is None:
                     self._jlc_before = (self.mask_col.GetSelection(),
                                         self.finish.GetSelection())
@@ -673,8 +775,11 @@ if wx:
                 self.preview_bw.SetBitmap(wx.Bitmap(self._jlc_preview()))
                 return
             algo = _ALGOS[self.dither.GetSelection()][1]
-            self.dot_size.Enable(algo != 0)
+            self.dot_size.Enable(algo != 0 and not self.trace.GetValue())
             length, width = self._mm(self.length), self._mm(self.width)
+            if self.trace.GetValue():
+                self._trace_preview(length, width)
+                return
             if length and width:
                 w_px, h_px = self._out_grid(algo != 0, length, width)
                 img = self.image.ConvertToGreyscale()
@@ -706,6 +811,80 @@ if wx:
             bw.Rescale(max(1, int(w_px * k)), max(1, int(h_px * k)),
                        wx.IMAGE_QUALITY_HIGH if k < 1 else wx.IMAGE_QUALITY_NORMAL)
             self.preview_bw.SetBitmap(wx.Bitmap(bw))
+
+        def _trace(self, length, width):
+            # This function gives the traces as (centre line, via centres, net) in mm
+            # from the top-left corner. If the settings are not valid numbers, it gives None.
+            track, gap = self._mm(self.track_w), self._mm(self.track_gap)
+            via, drill = self._mm(self.via_d), self._mm(self.via_drill)
+            if not (length and width and track and gap and via and drill and drill < via):
+                return None, track
+            pitch = track + gap
+            # An upscale before the threshold gives smoother outlines. Thus, the image
+            # size does not limit the grid here.
+            w_px = int(min(max(16, length * PX_PER_MM), MAX_PX))
+            h_px = int(min(max(16, width * PX_PER_MM), MAX_PX))
+            on = self._trace_mask(w_px, h_px)
+            thin = trace_art.thin_lines(on, w_px, h_px, length, width, track, gap)
+            if self.trace_style.GetSelection() == 0:
+                rings = trace_art.outline_rings(on, w_px, h_px, length, width, track, gap,
+                                                self.trace_count.GetValue())
+                traces = trace_art.bus(rings, pitch, track, via, self.trace_nets.GetValue(),
+                                       _VIA_SIDES[self.via_side.GetSelection()][1], thin)[0]
+            else:
+                traces = []
+                cols, rows = int(length / (2 * pitch)), int(width / (2 * pitch))
+                if cols >= 1 and rows >= 1:
+                    on = self._trace_mask(cols, rows)
+                    pts = trace_art.rows({(i % cols, i // cols) for i, b in enumerate(on) if b})
+                    if len(pts) >= 2:
+                        ox = (length - cols * 2 * pitch) / 2.0 + pitch / 2.0
+                        oy = (width - rows * 2 * pitch) / 2.0 + pitch / 2.0
+                        traces = [([(ox + x * pitch, oy + y * pitch)
+                                    for x, y in trace_art.chamfer(pts, 0.5)], [], 0)]
+            return traces + trace_art.branch_thin(thin, traces, pitch), track
+
+        def _trace_mask(self, w_px, h_px):
+            img = self.image.ConvertToGreyscale()
+            img.Rescale(w_px, h_px, wx.IMAGE_QUALITY_HIGH)
+            alpha = bytes(img.GetAlphaBuffer()) if img.HasAlpha() else None
+            return _dither(bytes(img.GetData()), w_px, h_px, alpha,
+                           self.threshold.GetValue() * 255 // 100,
+                           not self.invert.GetValue(), 0)
+
+        def _trace_preview(self, length, width):
+            traces, track = self._trace(length, width)
+            x0 = y0 = 0.0
+            if traces is None:
+                length, width = 1.0, self._aspect
+            elif traces:
+                # Vias can be outside the image. Thus, fit all items in the view.
+                xs = [x for p, _, _ in traces for x, _ in p] + [0.0, length]
+                ys = [y for p, _, _ in traces for _, y in p] + [0.0, width]
+                x0, y0 = min(xs), min(ys)
+                length, width = max(xs) - x0, max(ys) - y0
+            k = min(280.0 / length, 280.0 / width)
+            bmp = wx.Bitmap(max(1, int(length * k)), max(1, int(width * k)))
+            dc = wx.MemoryDC(bmp)
+            dc.SetBackground(wx.WHITE_BRUSH)
+            dc.Clear()
+            for p, vias, net in traces or ():
+                col = wx.Colour(*_NET_COLORS[net % len(_NET_COLORS)])
+                dc.SetPen(wx.Pen(col, max(1, int(track * k))))
+                dc.DrawLines([wx.Point(int((x - x0) * k), int((y - y0) * k)) for x, y in p])
+                dc.SetPen(wx.Pen(col))
+                dc.SetBrush(wx.Brush(col))
+                for x, y in vias:
+                    dc.DrawCircle(int((x - x0) * k), int((y - y0) * k),
+                                  max(2, int(self._mm(self.via_d) * k / 2)))
+            # The ends of the rows trace are too close together for vias. Mark them.
+            if traces and self.trace_style.GetSelection() == 1:
+                dc.SetPen(wx.RED_PEN)
+                dc.SetBrush(wx.RED_BRUSH)
+                for x, y in (traces[0][0][0], traces[0][0][-1]):
+                    dc.DrawCircle(int((x - x0) * k), int((y - y0) * k), 3)
+            dc.SelectObject(wx.NullBitmap)
+            self.preview_bw.SetBitmap(bmp)
 
         def _jlc_preview(self):
             length, width = self._mm(self.length), self._mm(self.width)
@@ -774,6 +953,9 @@ if wx:
                 pcbnew.Refresh()
                 self.Close()
                 return
+            if self.trace.GetValue():
+                self._create_traces(length, width, cx, cy, back)
+                return
 
             algo = _ALGOS[self.dither.GetSelection()][1]
             w_px, h_px = self._out_grid(algo != 0, length, width)
@@ -827,10 +1009,91 @@ if wx:
             pcbnew.Refresh()
             self.Close()
 
+        def _net(self, nets, n):
+            # Get the board net for net number n of this graphic.
+            if n not in nets:
+                name = "ART%d_%d" % (self._net_base, n + 1)
+                net = self.board.FindNet(name)
+                if net is None:
+                    net = pcbnew.NETINFO_ITEM(self.board, name)
+                    self.board.Add(net)
+                nets[n] = net
+            return nets[n]
+
+        def _create_traces(self, length, width, cx, cy, back):
+            traces, track = self._trace(length, width)
+            if traces is None:
+                wx.MessageBox("Track width, gap and via sizes must be positive "
+                              "numbers, with the drill smaller than the via.",
+                              "Img2Silk", wx.ICON_WARNING)
+                return
+            if not traces:
+                wx.MessageBox("The shape is too small for these tracks. Try a "
+                              "larger size, thinner tracks or moving the "
+                              "threshold slider.", "Img2Silk", wx.ICON_WARNING)
+                return
+            if self._net_base is None:
+                # Keep the nets of different graphics separate.
+                used = {str(k) for k in self.board.GetNetInfo().NetsByName().keys()}
+                self._net_base = next(i for i in range(1, 100000)
+                                      if not any(u.startswith("ART%d_" % i) for u in used))
+            self._replace_group()
+            group = self._new_group(length, width)
+            x0, y0 = cx - length / 2.0, cy - width / 2.0
+
+            def at(x, y):
+                return pcbnew.VECTOR2I_MM(x0 + length - x if back else x0 + x, y0 + y)
+
+            layers = ((pcbnew.B_Cu, pcbnew.B_SilkS, pcbnew.B_Mask) if back
+                      else (pcbnew.F_Cu, pcbnew.F_SilkS, pcbnew.F_Mask))
+            nets = {}
+            for k in _LAYER_MAP[self.layer.GetSelection()]:
+                for pts, vias, n in traces:
+                    pos = []
+                    for x, y in pts:
+                        p = at(x, y)
+                        # Points that are closer than 1 nm round to the same point.
+                        if not pos or p != pos[-1]:
+                            pos.append(p)
+                    for a, b in zip(pos, pos[1:]):
+                        # Put real tracks on copper. Then you can route to their ends.
+                        if k == 0:
+                            seg = pcbnew.PCB_TRACK(self.board)
+                            seg.SetNet(self._net(nets, n))
+                        else:
+                            seg = pcbnew.PCB_SHAPE(self.board)
+                            seg.SetShape(pcbnew.SHAPE_T_SEGMENT)
+                        seg.SetStart(a)
+                        seg.SetEnd(b)
+                        seg.SetLayer(layers[k])
+                        seg.SetWidth(pcbnew.FromMM(track))
+                        self.board.Add(seg)
+                        group.AddItem(seg)
+                    for x, y in vias:
+                        if k == 0:
+                            via = pcbnew.PCB_VIA(self.board)
+                            via.SetPosition(at(x, y))
+                            via.SetWidth(pcbnew.FromMM(self._mm(self.via_d)))
+                            via.SetDrill(pcbnew.FromMM(self._mm(self.via_drill)))
+                            via.SetNet(self._net(nets, n))
+                        else:
+                            via = pcbnew.PCB_SHAPE(self.board)
+                            via.SetShape(pcbnew.SHAPE_T_CIRCLE)
+                            via.SetFilled(True)
+                            via.SetStart(at(x, y))
+                            via.SetEnd(at(x + self._mm(self.via_d) / 2, y))
+                            via.SetWidth(0)
+                            via.SetLayer(layers[k])
+                        self.board.Add(via)
+                        group.AddItem(via)
+            pcbnew.Refresh()
+            self.Close()
+
         def _replace_group(self):
             self._del_ref()
             if self.replace:
-                old = [d for d in self.board.GetDrawings()
+                old = [d for d in list(self.board.GetDrawings())
+                       + list(self.board.GetTracks())
                        if _group_id(d) == self.replace]
                 for d in old:
                     self._remove(d)
@@ -851,6 +1114,16 @@ if wx:
                  "5c": self.five.GetValue(),
                  "jlc": self.jlc.GetValue(),
                  "mcl": self.mc_layers.GetSelection(),
+                 "tr": self.trace.GetValue(),
+                 "trs": self.trace_style.GetSelection(),
+                 "trw": self._mm(self.track_w) or 0.2,
+                 "trg": self._mm(self.track_gap) or 0.2,
+                 "trn": self.trace_count.GetValue(),
+                 "trk": self.trace_nets.GetValue(),
+                 "trb": self._net_base,
+                 "vd": self._mm(self.via_d) or 0.6,
+                 "vdr": self._mm(self.via_drill) or 0.3,
+                 "vs": self.via_side.GetSelection(),
                  "mask": self.mask_col.GetSelection(),
                  "fin": self.finish.GetSelection(),
                  "len": length, "wid": width}))
@@ -969,14 +1242,22 @@ if wx:
                     chain.Append(xs[xa], ys[yb])
                     chain.SetClosed(True)
                     poly.AddOutline(chain)
-                shape = pcbnew.PCB_SHAPE(self.board)
-                shape.SetShape(pcbnew.SHAPE_T_POLY)
-                shape.SetFilled(True)
-                shape.SetLayer(layer)
-                shape.SetPolyShape(poly)
-                shape.SetWidth(0)
-                self.board.Add(shape)
-                group.AddItem(shape)
+                # A saved board keeps only the first outline of a polygon. Thus, merge the
+                # dots that touch and make one shape for each outline. Holes are not saved
+                # either. Thus, fracture the shape to change the holes into slits.
+                poly.Simplify()
+                poly.Fracture()
+                for k in range(poly.OutlineCount()):
+                    one = pcbnew.SHAPE_POLY_SET()
+                    one.AddOutline(poly.Outline(k))
+                    shape = pcbnew.PCB_SHAPE(self.board)
+                    shape.SetShape(pcbnew.SHAPE_T_POLY)
+                    shape.SetFilled(True)
+                    shape.SetLayer(layer)
+                    shape.SetPolyShape(one)
+                    shape.SetWidth(0)
+                    self.board.Add(shape)
+                    group.AddItem(shape)
 
 
 if pcbnew:
