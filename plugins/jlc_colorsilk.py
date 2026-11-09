@@ -648,12 +648,27 @@ def easyeda_gerber(text, layer, stamp, layer_cfg, rnd=random):
 
 
 def easyeda_drill(text, plated, stamp):
-    """Change a KiCad Excellon file to the EasyEDA header. The holes stay the same."""
-    body = [ln for ln in text.replace("\r\n", "\n").split("\n") if ln and not ln.startswith(";")]
+    """Change a KiCad Excellon file to the EasyEDA format. The file must use metric units
+    and decimal points. Only the header and the tool format change. The holes stay the same."""
+    lines = [ln for ln in text.replace("\r\n", "\n").split("\n") if ln and not ln.startswith(";")]
+    if "%" not in lines or "METRIC" not in lines:
+        raise ValueError("Unexpected drill format from KiCad (need metric)")
+    split = lines.index("%")
+    tools = [(int(n), float(d)) for n, d in
+             (re.match(r"T(\d+)C([\d.]+)$", ln).groups() for ln in lines[:split] if re.match(r"T\d+C", ln))]
     kind = "PTH" if plated else "NPTH"
-    head = [";TYPE=" + ("PLATED" if plated else "NON_PLATED"), ";Layer: %s_Through" % kind,
-            ";EasyEDA Pro v%s, %s" % (EDA_VERSION, stamp), ";Gerber Generator version 0.3"]
-    return "\n".join(head + body) + "\n"
+    out = [";TYPE=" + ("PLATED" if plated else "NON_PLATED"), ";Layer: %s_Through" % kind,
+           ";EasyEDA Pro v%s, %s" % (EDA_VERSION, stamp), ";Gerber Generator version 0.3",
+           "M48", "METRIC,LZ,0000.00000"]
+    for i, (n, d) in enumerate(tools, 1):
+        out += [";Hole size %d = %.5f METRIC" % (i, d), "T%02dC%.5f" % (n, d)]
+    out += ["%", "G05", "G90"]
+    for ln in lines[split + 1:]:
+        if ln in ("G05", "G90", "T0", "M30"):  # EasyEDA does not use T0. M30 is the last line.
+            continue
+        m = re.match(r"T(\d+)$", ln)
+        out.append("T%02d" % int(m.group(1)) if m else ln)
+    return "\n".join(out + ["M30"])  # EasyEDA does not end the file with a new line.
 
 
 def plot_gerbers(board, tmp, stamp):
@@ -683,7 +698,10 @@ def plot_gerbers(board, tmp, stamp):
     files = []
     for name, ext, path in plotted:
         with open(path, "r") as f:
-            files.append(("Gerber_%s.%s" % (name, ext), easyeda_gerber(f.read(), name, stamp, layer_cfg).encode()))
+            text = f.read()
+        if ext in ("GTP", "GBP") and not re.search(r"D0[13]\*", text):
+            continue  # EasyEDA leaves out empty paste layers.
+        files.append(("Gerber_%s.%s" % (name, ext), easyeda_gerber(text, name, stamp, layer_cfg).encode()))
     drill = pcbnew.EXCELLON_WRITER(board)
     drill.SetOptions(False, False, pcbnew.VECTOR2I(0, 0), False)
     drill.SetFormat(True)
@@ -789,6 +807,13 @@ if __name__ == "__main__":
     easy = easyeda_gerber(kicad, "TopLayer", "2026-01-01 00:00:00", "1,2", rnd=random.Random(1))
     assert "%TF" not in easy and "\r" not in easy and "KiCad" not in easy
     assert "G54D10*" in easy and "X300Y200D01*" in easy and len(check_hash_aperture(easy)) == 1
+    # Change a KiCad drill file to the EasyEDA format. The holes must stay the same.
+    drl = easyeda_drill("M48\r\n; x\r\nFMAT,2\r\nMETRIC\r\nT1C1.651\r\nT2C0.3\r\n%\r\nG90\r\nG05\r\nT1\r\n"
+                        "X101.27Y-83.49\r\nT2\r\nX1.0Y-2.0\r\nT0\r\nM30\r\n", False, "2026-01-01 00:00:00")
+    assert drl.split("\n")[4:] == [
+        "M48", "METRIC,LZ,0000.00000", ";Hole size 1 = 1.65100 METRIC", "T01C1.65100",
+        ";Hole size 2 = 0.30000 METRIC", "T02C0.30000", "%", "G05", "G90",
+        "T01", "X101.27Y-83.49", "T02", "X1.0Y-2.0", "M30"], drl
     # On a rectangle, the marks are bottom-left, top-left and top-right (y axis up).
     rect = [(0, 0), (10, 0), (10, 5), (0, 5), (5, 0), (0, 2)]
     for i in range(len(rect)):
