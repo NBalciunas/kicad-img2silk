@@ -21,8 +21,6 @@ MAX_PX = 1000
 PX_PER_MM = 10.0
 DOT_MAX_PX = 400
 _IMG_PPI = 300
-_PRINT_PX_PER_MM = 20
-_PRINT_MAX_PX = 4000
 
 _KERNELS = {
     1: (16, ((1, 0, 7), (-1, 1, 3), (0, 1, 5), (1, 1, 1))),
@@ -340,10 +338,11 @@ if wx:
             grid.Add(self.jlc, 0, wx.ALIGN_CENTER_VERTICAL)
             btn_export = wx.Button(self, label="Export JLCPCB Files")
             btn_export.SetToolTip(
-                "Only generates the JLCPCB multi-color silkscreen files "
-                "(.FCTS, .FCBS, .FCBO and .FCBM) in a new folder next to the "
-                "board. It does not make Gerbers: plot those as usual, then put "
-                "these files into the Gerber zip before uploading it to JLCPCB.")
+                "Makes a new folder next to the board with a ready-to-upload "
+                "JLCPCB zip: the Gerber and drill files in the EasyEDA format, "
+                "plus the multi-color silkscreen files (.FCTS, .FCBS, .FCBO and "
+                ".FCBM). The four color files are also written loose, for use "
+                "with your own Gerber zip.")
             btn_export.Bind(wx.EVT_BUTTON, self.on_export)
             grid.Add(btn_export, 1, wx.EXPAND)
             self.trace = wx.CheckBox(self, label="Trace art")
@@ -1198,38 +1197,41 @@ if wx:
             folder = os.path.join(parent, "JLCPCB_color_%s_%s" % (
                 name.replace(" ", "_"),
                 datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")))
+            zip_name = "Gerber_%s_JLCPCB.zip" % name.replace(" ", "_")
             busy = wx.BusyCursor()
             try:
-                jlc_colorsilk.export_files(self.board, folder, images)
+                jlc_colorsilk.export_files(self.board, folder, images, zip_name)
             except Exception as e:
                 del busy
                 wx.MessageBox("Export failed:\n%s" % e, "Img2Silk", wx.ICON_ERROR)
                 return
             del busy
-            wx.MessageBox("Wrote the JLCPCB multi-color silkscreen files to:\n%s\n\n"
-                          "Put the four files (.FCTS, .FCBS, .FCBO and .FCBM) "
-                          "into your Gerber zip. The preview folder only shows what will "
-                          "be printed (grey is not printed) and does not go into "
-                          "the zip."
-                          % folder, "Img2Silk", wx.ICON_INFORMATION)
+            wx.MessageBox("Wrote the JLCPCB files to:\n%s\n\n"
+                          "Upload %s to JLCPCB. It holds the Gerber and drill files "
+                          "in the EasyEDA format and the multi-color silkscreen files.\n\n"
+                          "The four loose color files (.FCTS, .FCBS, .FCBO and .FCBM) are "
+                          "for use with your own Gerber zip instead. The preview folder "
+                          "only shows what will be printed (grey is not printed)."
+                          % (folder, zip_name), "Img2Silk", wx.ICON_INFORMATION)
 
         def _print_image(self, cfg, item):
+            # As EasyEDA does, put the original image file into the SVG. Then the printer
+            # gets the full resolution and the color profile.
+            path = cfg.get("img", "")
             nolog = wx.LogNull()
-            img = wx.Image(cfg.get("img", ""))
+            img = wx.Image(path)
             del nolog
             if not img.IsOk():
                 return None
+            with open(path, "rb") as f:
+                data = f.read()
+            mime = jlc_colorsilk.image_mime(data)
+            if mime is None:
+                data, mime = _png_bytes(img), "image/png"
             bb = item.GetBoundingBox()
-            w_mm, h_mm = pcbnew.ToMM(bb.GetWidth()), pcbnew.ToMM(bb.GetHeight())
-            ppmm = min(_PRINT_PX_PER_MM, _PRINT_MAX_PX / max(w_mm, h_mm))
-            w_px = max(1, min(img.GetWidth(), int(round(w_mm * ppmm))))
-            h_px = max(1, min(img.GetHeight(), int(round(h_mm * ppmm))))
-            img = img.Scale(w_px, h_px, wx.IMAGE_QUALITY_HIGH)
-            back = cfg.get("side", 0) == 1
-            if back:
-                img = img.Mirror()
-            return (_png_bytes(img), w_px, h_px, pcbnew.ToMM(bb.GetX()),
-                    pcbnew.ToMM(bb.GetY()), w_mm, h_mm, back)
+            return (data, mime, img.GetWidth(), img.GetHeight(), pcbnew.ToMM(bb.GetX()),
+                    pcbnew.ToMM(bb.GetY()), pcbnew.ToMM(bb.GetWidth()),
+                    pcbnew.ToMM(bb.GetHeight()), cfg.get("side", 0) == 1)
 
         def _add_polys(self, group, rects, xs, ys, layer):
             for i in range(0, len(rects), 2000):

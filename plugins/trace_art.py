@@ -456,7 +456,7 @@ def branch_thin(lines, traces, pitch):
     return out
 
 
-# Joining rings
+# Ring connections
 
 class _Ring:
     def __init__(self, level, pts):
@@ -1125,7 +1125,7 @@ if pcbnew:
         # Get the centre lines of concentric tracks that fill the outlines, as
         # (level, points). The tracks are one pitch apart. The maximum depth is `levels`
         # (0 fills the full shape). The values are in board units (nm). Each level is the
-        # previous level shrunk by one pitch. Thus, adjacent levels are never closer
+        # previous level, one pitch smaller. Thus, adjacent levels are never closer
         # than one pitch.
         region = _nested(outlines)
         miter = pcbnew.CORNER_STRATEGY_ALLOW_ACUTE_CORNERS
@@ -1259,7 +1259,7 @@ if __name__ == "__main__":
     assert more[0][0][-1] == (20, 0) and more[0][1] == [(0, 0)] and more[0][2] == 7
     assert more[1][1] == [(0, 50), (10, 50)] and more[1][2] == 8
 
-    # Nested squares one unit apart. For all numbers of nets, each net has two
+    # Test nested squares that are one unit apart. For all numbers of nets, each net has two
     # ends, all runs stay one unit apart and all the rings are used.
     nested = [(k, [(k, k), (30 - k, k), (30 - k, 30 - k), (k, 30 - k)])
               for k in range(6)]
@@ -1278,10 +1278,10 @@ if __name__ == "__main__":
                            for p0, p1 in zip(a[0], a[0][1:])
                            for q0, q1 in zip(b[0], b[0][1:])) >= 1.0 - 1e-6
         assert run > 0.8 * full, (count, run, full)
-    # Two pockets of nested rings. A port can cross only one of them. Thus, the
+    # Test two pockets of nested rings. A port can cross only one of them. Thus, the
     # other pocket connects through a slot across all its rings. A run must not go
-    # off the 45 degree grid. A slot end connected in the incorrect direction causes
-    # this problem.
+    # off the 45 degree grid. This problem occurs if a slot end connects in the
+    # incorrect direction.
     pockets = [(0, [(0, 0), (61, 0), (61, 30), (0, 30)])] + [
         (k, [(x0 + k, k), (x1 - k, k), (x1 - k, 30 - k), (x0 + k, 30 - k)])
         for k in (1, 2, 3, 4) for x0, x1 in ((0, 31), (30, 61))]

@@ -1,26 +1,34 @@
 """
 JLCPCB / EasyEDA Pro multi-color silkscreen export.
 
-This module makes the same files as EasyEDA Pro 3.2.149 (pcb.js):
+This module makes the same files as EasyEDA Pro (pcb.js):
   * The .FCTS, .FCBS and .FCBO files contain an encrypted SVG:
         RSA-OAEP-SHA256(aes_key) || RSA-OAEP-SHA256(aes_iv) || AES-128-GCM(svg)
     The AES key and the IV are random 16-byte values. The RSA key is the
     JLCPCB RSA-2048 public key. The KiCad Python does not include a crypto
     library. Thus, this module does AES-GCM and OAEP with hashlib only.
-  * The .FCBM file is a Gerber file. It contains the board shape, three
+    The SVG follows EasyEDA Pro 3.2.209 (generateSVG, color silkscreen 2.6).
+  * The .FCBM file follows EasyEDA Pro 3.2.149. It contains the board shape, three
     alignment marks (wYe), the EasyEDA header and the EasyEDA hash aperture
     (addHashApertureToGerber). The hash marks the design as imported from
     another tool.
-Add these files to the normal Gerber zip file.
-Units: EasyEDA uses a unit of 10 mil. In the SVG, the y axis points down, as in
+export_files can also write a full order zip. Then KiCad plots the Gerber and drill
+files. This module changes them to the EasyEDA format (header, 4.5 numbers, G54Dnn,
+hash aperture). On 2026-11-09, JLCPCB permitted EasyEDA-format Gerbers from other tools.
+The files look like EasyEDA files. The zip shows their origin in two ways. It has a
+README.txt file (readme_text). The hash uses the "imported" prefix.
+Units: The EasyEDA unit is 10 mil. In the SVG, the y axis points down, as in
 KiCad. In the Gerber file and in the mark points, the y axis points up.
 """
 import base64
 import datetime
 import hashlib
+import math
 import os
 import random
 import re
+import tempfile
+import zipfile
 from decimal import ROUND_HALF_UP, Decimal
 
 try:
@@ -29,19 +37,23 @@ except ImportError:
     pcbnew = None
 
 EDA_VERSION = "3.2.149"
-SVG_EDA_VERSION = "2.4(2026-05-08)"
+SVG_EDA_VERSION = "2.6(2026-09-15)"
 OBJECT_CONFIGS = ("Pad,Via,Track,Text,Image,Dimension,BoardOutline,BoardCutout,"
                   "CopperFilled,SolidRegion,FPCStiffener,Line,PlaneZone,"
                   "ComponentProperty,ComponentSilkscreen,TearDrop")
-IMPORTED = "494d"     # The EasyEDA hash prefix for designs from other tools.
+IMPORTED = "494d"     # EasyEDA uses this hash prefix for designs from other tools.
 UNIT_MM = 0.254
 BOARD_COLOR = "#FFFFFF"
 SILK_COLOR = "#000000"
-OUTLINE_INSET_MM = 0.2
+# EasyEDA moves the outline 0.2 mm in. Its outline detection finds a line 0.05 units
+# inside the outline. Thus, the print area ends 0.2127 mm inside the board edge.
+OUTLINE_INSET_MM = 0.2 + 0.05 * UNIT_MM
 MARK_INSET_MM = 3 * UNIT_MM
+ARC_TOL_MM = 0.01     # An arc can replace lines only if it stays this close to them.
 _APERTURE_MAX = 8191
 
-# JLCPCB RSA-2048 public key (modulus and exponent) from the EasyEDA Pro pcb.js file.
+# This is the JLCPCB RSA-2048 public key (modulus and exponent).
+# It comes from the EasyEDA Pro pcb.js file.
 _JLC_E = 65537
 _JLC_N = int(
     "ccfb6e52a25e71a47fc16b5cb464fc42e56c9660c7dd4b77b3c7352ece00f8cf"
@@ -119,8 +131,8 @@ def _aes_block(rk, block):
 
 
 def _ghash_table(h):
-    """Make a 4096-entry table. With this table, X*H in GF(2^128) needs only 16 lookups
-    (one lookup for each byte of X)."""
+    """Make a table with 4096 entries. With this table, X*H in GF(2^128) needs only
+    16 lookups (one lookup for each byte of X)."""
     basis = []
     v = h
     for _ in range(128):
@@ -145,7 +157,7 @@ def _ghash(table, data, acc=0):
 
 
 def aes_gcm_encrypt(key, iv, plain):
-    """Encrypt with AES-128-GCM without AAD. Return the ciphertext followed by the
+    """Encrypt with AES-128-GCM without AAD. Return the ciphertext and then the
     16-byte tag (WebCrypto layout)."""
     rk = _expand_key(key)
     table = _ghash_table(_aes_block(rk, 0))
@@ -269,6 +281,12 @@ def _n(v):
     return "0" if s in ("", "-0") else s
 
 
+def _f(v):
+    """Write a number with full precision, as JavaScript and EasyEDA do."""
+    v = float(v)
+    return str(int(v)) if v.is_integer() else repr(v)
+
+
 def _chains(ps):
     """Get each outline and each hole of a SHAPE_POLY_SET as a list of (x, y) points in mm."""
     out = []
@@ -279,9 +297,102 @@ def _chains(ps):
     return out
 
 
-def _path(ps):
-    return " ".join("M" + "L".join("%s %s" % (_n(x / UNIT_MM), _n(y / UNIT_MM)) for x, y in pts) + "Z"
-                    for pts in _chains(ps) if pts)
+def _area(pts):
+    """Get the signed area of a closed loop. The y axis points down. Thus, the area of
+    a loop that goes clockwise on the screen is positive."""
+    return sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1) in zip(pts, pts[1:] + pts[:1])) / 2
+
+
+def _loops(ps):
+    """Get each outline and each hole of a SHAPE_POLY_SET as a list of (x, y) points in mm.
+    As in EasyEDA, outlines go clockwise and holes go counterclockwise on the screen.
+    Then the SVG nonzero fill rule keeps the holes empty."""
+    out = []
+    for i in range(ps.OutlineCount()):
+        for k, c in enumerate([ps.COutline(i)] + [ps.Hole(i, h) for h in range(ps.HoleCount(i))]):
+            pts = [(pcbnew.ToMM(c.CPoint(j).x), pcbnew.ToMM(c.CPoint(j).y)) for j in range(c.PointCount())]
+            if len(pts) > 2:
+                out.append(pts if (_area(pts) > 0) == (k == 0) else pts[::-1])
+    return out
+
+
+def _circle(a, b, c):
+    """Get the center and the radius of the circle through three points.
+    Return None if the points are on a line."""
+    (ax, ay), (bx, by), (cx, cy) = a, b, c
+    bx, by, cx, cy = bx - ax, by - ay, cx - ax, cy - ay
+    d = 2 * (bx * cy - by * cx)
+    if abs(d) < 1e-12:
+        return None
+    ux = (cy * (bx * bx + by * by) - by * (cx * cx + cy * cy)) / d
+    uy = (bx * (cx * cx + cy * cy) - cx * (bx * bx + by * by)) / d
+    return ax + ux, ay + uy, math.hypot(ux, uy)
+
+
+def _arc(run):
+    """Check whether the points are on one arc of 180 degrees or less. The arc must stay
+    within ARC_TOL_MM of the lines between the points. Return (radius, SVG sweep flag)
+    or None. KiCad keeps outline arcs as lines. Thus, this function finds the arcs again."""
+    fit = _circle(run[0], run[len(run) // 2], run[-1])
+    if fit is None:
+        return None
+    cx, cy, r = fit
+    a = [math.atan2(y - cy, x - cx) for x, y in run]
+    steps = [(q - p + math.pi) % (2 * math.pi) - math.pi for p, q in zip(a, a[1:])]
+    if not (all(t > 1e-3 for t in steps) or all(t < -1e-3 for t in steps)):
+        return None
+    off = max(abs(math.hypot(x - cx, y - cy) - r) for x, y in run)
+    if abs(sum(steps)) > math.pi + 1e-9 or off + max(r * (1 - math.cos(t / 2)) for t in steps) > ARC_TOL_MM:
+        return None
+    return r, int(steps[0] > 0)
+
+
+def _segments(pts):
+    """Split a closed loop into lines and arcs. Start at the longest edge.
+    Return the start point and a list of (end point, (radius, sweep flag) or None)."""
+    n = len(pts)
+    s = max(range(n), key=lambda i: math.dist(pts[i], pts[(i + 1) % n]))
+    p = pts[s:] + pts[:s + 1]
+    out, i = [], 0
+    while i < n:
+        k, best = i + 3, None
+        while k <= n <= 5000:
+            fit = _arc(p[i:k + 1])
+            if fit is None:
+                break
+            best, k = (k, fit), k + 1
+        out.append((p[best[0]], best[1]) if best else (p[i + 1], None))
+        i = best[0] if best else i + 1
+    return p[0], out
+
+
+def _d(loops, fit=True):
+    """Write closed loops (points in mm) as SVG path data in EasyEDA units. Use the syntax of
+    the EasyEDA path encoder (wE): "M x y L x y x y A r r 0 0 1 x y". The last point is
+    the first point again. There is no Z. If fit=False, write only lines in the given order."""
+    out = []
+    for pts in loops:
+        start, segs = _segments(pts) if fit else (pts[0], [(q, None) for q in pts[1:] + pts[:1]])
+        s, prev = ["M %s %s " % (_n(start[0] / UNIT_MM), _n(start[1] / UNIT_MM))], None
+        for (x, y), arc in segs:
+            kind = "A" if arc else "L"
+            s.append(("" if kind == prev else kind + " ")
+                     + ("%s %s 0 0 %d " % (_n(arc[0] / UNIT_MM), _n(arc[0] / UNIT_MM), arc[1]) if arc else "")
+                     + "%s %s " % (_n(x / UNIT_MM), _n(y / UNIT_MM)))
+            prev = kind
+        out.append("".join(s))
+    return " ".join(out)
+
+
+def _rect(box):
+    """Make a rectangle from a BOX2I. As in EasyEDA, the points go lower left, upper left,
+    upper right, lower right (with the y axis up)."""
+    ps = pcbnew.SHAPE_POLY_SET()
+    ps.NewOutline()
+    for x, y in ((box.GetLeft(), box.GetBottom()), (box.GetLeft(), box.GetTop()),
+                 (box.GetRight(), box.GetTop()), (box.GetRight(), box.GetBottom())):
+        ps.Append(x, y)
+    return ps
 
 
 def _inflated(ps, mm):
@@ -376,39 +487,77 @@ def _svg_head(box, marks):
                SVG_EDA_VERSION, " ".join("%s %s" % (_n(a), _n(b)) for a, b in marks)))
 
 
-def _side(board, outline, back):
-    """Get the printable area and the silkscreen of one side.
-    The printable area is the inset outline without the mask openings."""
-    printable = _inflated(outline, -OUTLINE_INSET_MM)
-    printable.BooleanSubtract(_layer_polys(board, pcbnew.B_Mask if back else pcbnew.F_Mask))
-    return printable, _layer_polys(board, pcbnew.B_SilkS if back else pcbnew.F_SilkS)
+def _side(board, back):
+    """Get the mask openings and the silkscreen of one side."""
+    return (_layer_polys(board, pcbnew.B_Mask if back else pcbnew.F_Mask),
+            _layer_polys(board, pcbnew.B_SilkS if back else pcbnew.F_SilkS))
 
 
-def build_svg(outline, marks, printable, silk, images, back):
-    """Make the color silkscreen SVG for one side.
-    Each image is (png_bytes, w_px, h_px, x, y, w, h in mm, back)."""
+def _jpeg_rotated(data):
+    """Check whether a JPEG file has an EXIF orientation that is not normal."""
+    i = 2
+    while i + 4 <= len(data) and data[i] == 0xFF and data[i + 1] != 0xDA:
+        size = int.from_bytes(data[i + 2:i + 4], "big")
+        seg = data[i + 4:i + 2 + size]
+        if data[i + 1] == 0xE1 and seg[:6] == b"Exif\0\0":
+            t = seg[6:]
+            bo = "little" if t[:2] == b"II" else "big"
+            ifd = int.from_bytes(t[4:8], bo)
+            for k in range(int.from_bytes(t[ifd:ifd + 2], bo)):
+                e = t[ifd + 2 + 12 * k:ifd + 14 + 12 * k]
+                if int.from_bytes(e[:2], bo) == 0x0112:
+                    return int.from_bytes(e[8:10], bo) > 1
+        i += 2 + size
+    return False
+
+
+def image_mime(data):
+    """Get the MIME type of a PNG or JPEG file that can go into the SVG without changes,
+    as in EasyEDA. Return None for other files. Also return None for files with an EXIF
+    orientation, because a viewer can turn them. Then use the image as KiCad shows it."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return None if b"eXIf" in data[:data.find(b"IDAT")] else "image/png"
+    if data[:3] == b"\xff\xd8\xff" and not _jpeg_rotated(data):
+        return "image/jpeg"
+    return None
+
+
+def build_svg(outline, marks, inset, mask, silk, box, images, back):
+    """Make the color silkscreen SVG for one side (EasyEDA generateSVG, board without panel).
+    inset is the board outline, OUTLINE_INSET_MM inside the edge. mask contains the mask
+    openings of the side. box is the BOX2I of all board items. Each image is
+    (file bytes, MIME type, w_px, h_px, x, y, w, h in mm, back)."""
     bb = outline.BBox()
-    box = (pcbnew.ToMM(bb.GetX()) / UNIT_MM, pcbnew.ToMM(bb.GetY()) / UNIT_MM,
-           pcbnew.ToMM(bb.GetWidth()) / UNIT_MM, pcbnew.ToMM(bb.GetHeight()) / UNIT_MM)
-    x, y, w, h = box
-    svg = _svg_head(box, marks)
-    svg += ("<defs><clipPath id='clipPath0'><path d=\"%s\" id=\"outline0\" stroke=\"none\" "
-            "clip-rule=\"evenodd\" style=\"fill-opacity:1;fill-rule:evenodd;fill:block;\"/>"
-            "</clipPath></defs>" % _path(printable))
-    svg += "<g clip-path='url(#clipPath0)' transform=\"%s\">" % (
+    box_u = (pcbnew.ToMM(bb.GetX()) / UNIT_MM, pcbnew.ToMM(bb.GetY()) / UNIT_MM,
+             pcbnew.ToMM(bb.GetWidth()) / UNIT_MM, pcbnew.ToMM(bb.GetHeight()) / UNIT_MM)
+    x, y, w, h = box_u
+    svg = _svg_head(box_u, marks)
+    # Use two clip paths, as EasyEDA does. The first clip path is the inset outline.
+    # The second clip path is all items without the mask openings.
+    background = _rect(box)
+    solder = pcbnew.SHAPE_POLY_SET(background)
+    solder.BooleanSubtract(mask)
+    svg += ("<defs><clipPath id='clipPath0'><path d=\"%s\" id=\"outline0\" stroke=\"none\"  "
+            "style=\"fill-opacity:1;fill-rule:nonzero;fill:block;\"/></clipPath></defs>"
+            "<defs><clipPath id='clipPath1' clip-path='url(#clipPath0)'><path d=\"%s\" id=\"solder1\" "
+            "stroke=\"none\"  style=\"fill-opacity:1;fill-rule:nonzero;fill:block\"/></clipPath></defs>"
+            % (_d(_loops(inset)), _d(_loops(solder))))
+    svg += "<g clip-path='url(#clipPath1)' transform=\"%s\">" % (
         "scale(-1 1) translate(%s 0)" % _n(-(x * 2 + w)) if back else "scale(1 1) translate(0 0)")
-    svg += ('<path d="M%s %sL%s %sL%s %sL%s %sZ" fill="%s" stroke="none" stroke-width="0" id ="background" />'
-            % (_n(x), _n(y), _n(x + w), _n(y), _n(x + w), _n(y + h), _n(x), _n(y + h), BOARD_COLOR))
-    for png, w_px, h_px, ix, iy, iw, ih, iback in images:
+    svg += ('<path d="%s" fill="%s" stroke="none" stroke-width="0" id ="background" />'
+            % (_d(_loops(background), fit=False), BOARD_COLOR))
+    for data, mime, w_px, h_px, ix, iy, iw, ih, iback in images:
         if iback != back:
             continue
+        # A bottom image is not mirrored. As in EasyEDA, a negative x scale mirrors it.
+        sx, sy = iw / UNIT_MM / w_px, ih / UNIT_MM / h_px
         svg += ('<image width = "%d" height ="%d" preserveAspectRatio="none" '
-                'xlink:href="data:image/png;base64,%s" transform="matrix(%s 0 0 %s %s %s)"/>'
-                % (w_px, h_px, base64.b64encode(png).decode(),
-                   _n(iw / UNIT_MM / w_px), _n(ih / UNIT_MM / h_px), _n(ix / UNIT_MM), _n(iy / UNIT_MM)))
+                'xlink:href="data:%s;base64,%s" transform="matrix(%s 0 0 %s %s %s)"/>'
+                % (w_px, h_px, mime, base64.b64encode(data).decode(), _f(-sx if back else sx), _f(sy),
+                   _f((ix + iw if back else ix) / UNIT_MM), _f(iy / UNIT_MM)))
     if silk.OutlineCount():
         svg += ('<path d="%s" id="silk" stroke="none" layerid="%d" '
-                'style="fill-opacity:1;fill-rule:evenodd;fill:%s"/>' % (_path(silk), 4 if back else 3, SILK_COLOR))
+                'style="fill-opacity:1;fill-rule:nonzero;fill:%s"/>' % (_d(_loops(silk)), 4 if back else 3, SILK_COLOR))
     return svg + "</g></svg>"
 
 
@@ -440,10 +589,10 @@ def render_png(path, outline, printable, silk, images, back):
         gc.FillPath(p, wx.ODDEVEN_RULE)
 
     fill([], BOARD_COLOR, frame=True)
-    for png, _, _, ix, iy, iw, ih, iback in images:
+    for data, _, _, _, ix, iy, iw, ih, iback in images:
         if iback == back:
-            img = wx.Image(io.BytesIO(png))
-            gc.DrawBitmap(wx.Bitmap(img.Mirror() if back else img),
+            # From the bottom side, a bottom image is not mirrored.
+            gc.DrawBitmap(wx.Bitmap(wx.Image(io.BytesIO(data))),
                           px(ix + iw if back else ix), (iy - by) * k, iw * k, ih * k)
     fill(_chains(silk), SILK_COLOR)
     fill(_chains(printable), "#A0A0A0", frame=True)
@@ -463,9 +612,8 @@ def build_fcbo(outline):
            '        xmlns="http://www.w3.org/2000/svg"\n'
            '        xmlns:svg="http://www.w3.org/2000/svg">'
            % (_n(w * UNIT_MM), _n(h * UNIT_MM), _n(x), _n(y), _n(w), _n(h)))
-    for pts in _chains(outline):
-        d = "M" + "L".join("%s %s" % (_n(px / UNIT_MM), _n(py / UNIT_MM)) for px, py in pts + pts[:1])
-        svg += '<path d="%s" fill="none" stroke="green" stroke-width="2" id ="boardOutline" />' % d
+    for pts in _loops(outline):
+        svg += '<path d="%s" fill="none" stroke="green" stroke-width="2" id ="boardOutline" />' % _d([pts])
     return svg + "</svg>"
 
 
@@ -474,16 +622,113 @@ def _layer_cfg(board):
     return ",".join(map(str, list(range(1, 12)) + [13, 14] + list(range(15, 15 + inner)) + [56]))
 
 
-def export_files(board, folder, images):
+def _gerber_layers(board):
+    """Get (KiCad layer, EasyEDA layer name, file extension) for each layer to plot."""
+    inner = board.GetCopperLayerCount() - 2
+    out = [(pcbnew.F_Cu, "TopLayer", "GTL"), (pcbnew.B_Cu, "BottomLayer", "GBL")]
+    out += [(getattr(pcbnew, "In%d_Cu" % i), "InnerLayer%d" % i, "G%d" % i) for i in range(1, inner + 1)]
+    return out + [(pcbnew.F_SilkS, "TopSilkscreenLayer", "GTO"), (pcbnew.B_SilkS, "BottomSilkscreenLayer", "GBO"),
+                  (pcbnew.F_Mask, "TopSolderMaskLayer", "GTS"), (pcbnew.B_Mask, "BottomSolderMaskLayer", "GBS"),
+                  (pcbnew.F_Paste, "TopPasteMaskLayer", "GTP"), (pcbnew.B_Paste, "BottomPasteMaskLayer", "GBP"),
+                  (pcbnew.Edge_Cuts, "BoardOutlineLayer", "GKO")]
+
+
+def easyeda_gerber(text, layer, stamp, layer_cfg, rnd=random):
+    """Change a KiCad Gerber file (format 4.5, mm, no X2) to the EasyEDA format.
+    Only the header, the comments and the aperture selects change. The drawing stays the same."""
+    text = text.replace("\r\n", "\n")
+    if "%FSLAX45Y45*%" not in text or "%MOMM*%" not in text:
+        raise ValueError("Unexpected Gerber format from KiCad (need 4.5 and mm)")
+    body = []
+    for line in text.split("\n"):
+        if not line or line.startswith(("G04", "%TF", "%TA", "%TO", "%TD", "%FS", "%MO")):
+            continue
+        body.append("G54" + line if re.match(r"D\d{2,4}\*$", line) else line)
+    return add_hash_aperture(_header(layer, stamp, layer_cfg) + "\n".join(body) + "\n", rnd=rnd)
+
+
+def easyeda_drill(text, plated, stamp):
+    """Change a KiCad Excellon file to the EasyEDA header. The holes stay the same."""
+    body = [ln for ln in text.replace("\r\n", "\n").split("\n") if ln and not ln.startswith(";")]
+    kind = "PTH" if plated else "NPTH"
+    head = [";TYPE=" + ("PLATED" if plated else "NON_PLATED"), ";Layer: %s_Through" % kind,
+            ";EasyEDA Pro v%s, %s" % (EDA_VERSION, stamp), ";Gerber Generator version 0.3"]
+    return "\n".join(head + body) + "\n"
+
+
+def plot_gerbers(board, tmp, stamp):
+    """Plot the Gerber and drill files with KiCad into tmp.
+    Change them to the EasyEDA format. Return a list of (file name, bytes)."""
+    layer_cfg = _layer_cfg(board)
+    pc = pcbnew.PLOT_CONTROLLER(board)
+    po = pc.GetPlotOptions()
+    po.SetOutputDirectory(tmp)
+    po.SetUseGerberX2format(False)
+    po.SetIncludeGerberNetlistInfo(False)
+    po.SetCreateGerberJobFile(False)
+    po.SetGerberPrecision(5)
+    po.SetUseAuxOrigin(False)
+    po.SetSubtractMaskFromSilk(False)
+    po.SetPlotFrameRef(False)
+    po.SetMirror(False)
+    po.SetScale(1)
+    po.SetDrillMarksType(pcbnew.DRILL_MARKS_NO_DRILL_SHAPE)
+    plotted = []
+    for layer, name, ext in _gerber_layers(board):
+        pc.SetLayer(layer)
+        pc.OpenPlotfile(ext, pcbnew.PLOT_FORMAT_GERBER, "")
+        pc.PlotLayer()
+        plotted.append((name, ext, pc.GetPlotFileName()))
+    pc.ClosePlot()
+    files = []
+    for name, ext, path in plotted:
+        with open(path, "r") as f:
+            files.append(("Gerber_%s.%s" % (name, ext), easyeda_gerber(f.read(), name, stamp, layer_cfg).encode()))
+    drill = pcbnew.EXCELLON_WRITER(board)
+    drill.SetOptions(False, False, pcbnew.VECTOR2I(0, 0), False)
+    drill.SetFormat(True)
+    try:
+        drill.CreateDrillandMapFilesSet(tmp, True, False, False)
+    except TypeError:  # KiCad 9 has no tenting file flag.
+        drill.CreateDrillandMapFilesSet(tmp, True, False)
+    for fn in sorted(os.listdir(tmp)):
+        if not fn.endswith("PTH.drl"):
+            continue
+        plated = not fn.endswith("-NPTH.drl")
+        with open(os.path.join(tmp, fn), "r") as f:
+            text = f.read()
+        if re.search(r"^X", text, re.M):  # EasyEDA leaves out empty drill files.
+            files.append(("Drill_%s_Through.DRL" % ("PTH" if plated else "NPTH"),
+                          easyeda_drill(text, plated, stamp).encode()))
+    return files
+
+
+def readme_text(board, stamp):
+    """Get the text of README.txt in the order zip. It tells the origin of the files."""
+    name = os.path.splitext(os.path.basename(board.GetFileName()))[0] or "PCB"
+    return ("Board: %s\r\n"
+            "Exported: %s\r\n\r\n"
+            "This board was designed in KiCad %s. EasyEDA was not used.\r\n\r\n"
+            "The Gerber and drill files were plotted by KiCad and converted to the\r\n"
+            "EasyEDA Pro file format by the img2silk KiCad plugin. The multi-color\r\n"
+            "silkscreen files (.FCTS, .FCBS, .FCBO and .FCBM) were made by img2silk\r\n"
+            "in the EasyEDA Pro format.\r\n" % (name, stamp, pcbnew.GetBuildVersion()))
+
+
+def export_files(board, folder, images, zip_name=None):
     """Write the four color silkscreen files into a new folder.
     Write the PNG previews into folder/preview.
-    Add the four files to the Gerber zip file with the normal Gerber files."""
+    If zip_name is set, also write folder/zip_name. This is the full order zip. It contains
+    the Gerber and drill files in the EasyEDA format and the four color files.
+    If zip_name is not set, add the four files to your own Gerber zip file."""
     stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     outline = board_outline(board)
     marks = _marks(outline)
-    sides = [_side(board, outline, back) for back in (False, True)]
-    svgs = [build_svg(outline, marks, printable, silk, images, back).encode()
-            for back, (printable, silk) in zip((False, True), sides)]
+    inset = _inflated(outline, -OUTLINE_INSET_MM)
+    box = board.ComputeBoundingBox(False)
+    sides = [_side(board, back) for back in (False, True)]
+    svgs = [build_svg(outline, marks, inset, mask, silk, box, images, back).encode()
+            for back, (mask, silk) in zip((False, True), sides)]
     files = (("Fabrication_ColorfulTopSilkscreen.FCTS", encrypt(svgs[0])),
              ("Fabrication_ColorfulBottomSilkscreen.FCBS", encrypt(svgs[1])),
              ("Fabrication_ColorfulBoardOutlineLayer.FCBO", encrypt(build_fcbo(outline).encode())),
@@ -493,7 +738,16 @@ def export_files(board, folder, images):
     for name, data in files:
         with open(os.path.join(folder, name), "wb") as f:
             f.write(data)
-    for back, (printable, silk) in zip((False, True), sides):
+    if zip_name:
+        with tempfile.TemporaryDirectory() as tmp:
+            gerbers = plot_gerbers(board, tmp, stamp)
+        with zipfile.ZipFile(os.path.join(folder, zip_name), "w", zipfile.ZIP_DEFLATED) as z:
+            for name, data in gerbers + list(files):
+                z.writestr(name, data)
+            z.writestr("README.txt", readme_text(board, stamp))
+    for back, (mask, silk) in zip((False, True), sides):
+        printable = pcbnew.SHAPE_POLY_SET(inset)
+        printable.BooleanSubtract(mask)
         render_png(os.path.join(folder, "preview", "bottom.png" if back else "top.png"),
                    outline, printable, silk, images, back)
 
@@ -507,7 +761,7 @@ if __name__ == "__main__":
     assert aes_gcm_encrypt(bytes(16), bytes(12), b"") == h("58e2fccefa7e3061367f1d57a4e7455a")
     assert aes_gcm_encrypt(bytes(16), bytes(12), bytes(16)) == h(
         "0388dace60b6a392f328c2b971b2fe78ab6e47d42cec13bdf53a67b21257bddf")
-    # OAEP padding: with e=1, the "ciphertext" is the encoded message.
+    # With e=1, the "ciphertext" is the message with the OAEP padding.
     # Remove the padding and compare the result.
     em = rsa_oaep_encrypt(b"hello", e=1, seed=bytes(range(32)))
     assert em[0] == 0 and len(em) == 256
@@ -517,7 +771,7 @@ if __name__ == "__main__":
     assert db[:32] == hashlib.sha256(b"").digest()
     assert db[32:].lstrip(b"\x00") == b"\x01hello"
     assert len(encrypt(b"x" * 100)) == 512 + 100 + 16
-    # Hash aperture: make sure that each file has one correct hash line.
+    # Make sure that each file has one correct hash aperture line.
     # Test the append branch and the renumber branch.
     for count in (2, 9):
         aps = "".join("%%ADD%dC,0.%d*%%\n" % (10 + i, i + 1) for i in range(count))
@@ -528,11 +782,51 @@ if __name__ == "__main__":
             assert len(check_hash_aperture(out)) == 1, (count, seed)
             assert len(re.findall(r"^%ADD", out, re.M)) == count + 1
     assert _js_fixed2("0.125") == "0.13" and _js_fixed2("0.5") == "0.50"
-    # Marks on a rectangle (y axis up): bottom-left, top-left and top-right.
+    # Change a KiCad Gerber to the EasyEDA format. The drawing must stay the same.
+    # The aperture selects must use G54. The file must have one hash line.
+    kicad = ("%TF.GenerationSoftware,KiCad,Pcbnew,10.0.5*%\r\nG04 x*\r\n%FSLAX45Y45*%\r\n%MOMM*%\r\n"
+             "%LPD*%\r\nG01*\r\n%ADD10C,0.150000*%\r\nD10*\r\nX100Y200D02*\r\nX300Y200D01*\r\nM02*\r\n")
+    easy = easyeda_gerber(kicad, "TopLayer", "2026-01-01 00:00:00", "1,2", rnd=random.Random(1))
+    assert "%TF" not in easy and "\r" not in easy and "KiCad" not in easy
+    assert "G54D10*" in easy and "X300Y200D01*" in easy and len(check_hash_aperture(easy)) == 1
+    # On a rectangle, the marks are bottom-left, top-left and top-right (y axis up).
     rect = [(0, 0), (10, 0), (10, 5), (0, 5), (5, 0), (0, 2)]
     for i in range(len(rect)):
         for pts in (rect[i:] + rect[:i], (rect[i:] + rect[:i])[::-1]):
             assert pick_marks(pts) == [(0, 0), (0, 5), (10, 5)], i
     diamond = [(0, 0), (5, 5), (10, 0), (5, -5)]  # Only one point is at the left side.
     assert pick_marks(diamond) == [(0, 0), (5, 5), (10, 0)]
+    # This module writes numbers as JavaScript writes them.
+    assert _f(2.0) == "2" and _f(-0.0) == "0" and _f(0.1) == "0.1"
+    # A loop that goes clockwise on the screen (y axis down) has a positive area.
+    square = [(0, 0), (10, 0), (10, 10), (0, 10)]
+    assert _area(square) == 100 and _area(square[::-1]) == -100
+    assert not any(arc for _, arc in _segments(square)[1])  # Corners are not arcs.
+
+    def corner(cx, cy, a0):  # Make a 90 degree corner with radius 1, as KiCad does.
+        return [(cx + math.cos(math.radians(a0 + 5 * k)), cy + math.sin(math.radians(a0 + 5 * k)))
+                for k in range(19)]
+    rounded = corner(9, 1, 270) + corner(9, 9, 0) + corner(1, 9, 90) + corner(1, 1, 180)
+    segs = _segments(rounded)[1]
+    assert len(segs) == 8 and [arc is None for _, arc in segs].count(False) == 4, segs
+    assert all(abs(arc[0] - 1) < 1e-6 and arc[1] == 1 for _, arc in segs if arc)
+    d = _d([rounded])
+    assert d.startswith("M ") and d.count("A ") == 4 and d.count("L ") == 4 and "Z" not in d
+    circle = [(5 * math.cos(math.radians(a)), 5 * math.sin(math.radians(a))) for a in range(0, 360, 3)]
+    segs = _segments(circle)[1]
+    assert len(segs) == 2 and all(segs[i][1] for i in (0, 1))  # The result is two arcs of 180 degrees.
+    assert _d([circle]).count("A ") == 1  # The second arc continues without "A".
+    wiggle = [(x * 0.1, 1e-6 * (x % 2)) for x in range(11)] + [(1, 1), (0, 1)]
+    assert not any(arc for _, arc in _segments(wiggle)[1])  # Lines stay lines.
+    assert _d([square], fit=False) == "M 0 0 L 39.3701 0 39.3701 39.3701 0 39.3701 0 0 "
+
+    def jpeg(orientation):  # Make a JPEG header with an EXIF orientation.
+        ifd = b"\x01\x00\x12\x01\x03\x00\x01\x00\x00\x00" + bytes([orientation, 0, 0, 0])
+        exif = b"Exif\0\0II*\0\x08\0\0\0" + ifd
+        return b"\xff\xd8\xff\xe1" + (len(exif) + 2).to_bytes(2, "big") + exif + b"\xff\xda"
+    assert image_mime(jpeg(1)) == "image/jpeg" and image_mime(jpeg(6)) is None
+    assert image_mime(b"\xff\xd8\xff\xe0\x00\x02\xff\xda") == "image/jpeg"
+    assert image_mime(b"\x89PNG\r\n\x1a\n\0\0\0\0IDAT") == "image/png"
+    assert image_mime(b"\x89PNG\r\n\x1a\n\0\0\0\x06eXIf\0\0\0\0IDAT") is None
+    assert image_mime(b"GIF89a") is None
     print("self-check ok")
