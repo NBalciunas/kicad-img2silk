@@ -377,26 +377,18 @@ if wx:
             self.trace_count.Bind(wx.EVT_SPINCTRL, self.update_bw)
             self.trace_count.Bind(wx.EVT_TEXT, self.update_bw)
             grid.Add(self.trace_count, 1, wx.EXPAND)
-            grid.Add(wx.StaticText(self, label="Track width / gap (mm):"), 0, wx.ALIGN_CENTER_VERTICAL)
-            tw_row = wx.BoxSizer(wx.HORIZONTAL)
             self.track_w = wx.TextCtrl(self, value="0.2")
             self.track_gap = wx.TextCtrl(self, value="0.2")
-            for c in (self.track_w, self.track_gap):
-                c.Disable()
-                c.Bind(wx.EVT_TEXT, self.update_bw)
-                tw_row.Add(c, 1, wx.EXPAND)
-            tw_row.InsertSpacer(1, 5)
-            grid.Add(tw_row, 1, wx.EXPAND)
-            grid.Add(wx.StaticText(self, label="Via diameter / drill (mm):"), 0, wx.ALIGN_CENTER_VERTICAL)
-            via_row = wx.BoxSizer(wx.HORIZONTAL)
             self.via_d = wx.TextCtrl(self, value="0.6")
             self.via_drill = wx.TextCtrl(self, value="0.3")
-            for c in (self.via_d, self.via_drill):
+            for label, c in (("Track width (mm):", self.track_w),
+                             ("Track gap (mm):", self.track_gap),
+                             ("Via diameter (mm):", self.via_d),
+                             ("Via hole (mm):", self.via_drill)):
                 c.Disable()
                 c.Bind(wx.EVT_TEXT, self.update_bw)
-                via_row.Add(c, 1, wx.EXPAND)
-            via_row.InsertSpacer(1, 5)
-            grid.Add(via_row, 1, wx.EXPAND)
+                grid.Add(wx.StaticText(self, label=label), 0, wx.ALIGN_CENTER_VERTICAL)
+                grid.Add(c, 1, wx.EXPAND)
             grid.Add(wx.StaticText(self, label="Via side:"), 0, wx.ALIGN_CENTER_VERTICAL)
             self.via_side = wx.Choice(self, choices=[n for n, _ in _VIA_SIDES])
             self.via_side.SetToolTip(
@@ -734,6 +726,7 @@ if wx:
             if self.trace.GetValue():
                 self.five.SetValue(False)
                 self.jlc.SetValue(False)
+                self.outline.SetValue(False)
             self.on_jlc(None)
 
         def on_jlc(self, _):
@@ -1023,7 +1016,7 @@ if wx:
             traces, track = self._trace(length, width)
             if traces is None:
                 wx.MessageBox("Track width, gap and via sizes must be positive "
-                              "numbers, with the drill smaller than the via.",
+                              "numbers, with the via hole smaller than the via diameter.",
                               "Img2Silk", wx.ICON_WARNING)
                 return
             if not traces:

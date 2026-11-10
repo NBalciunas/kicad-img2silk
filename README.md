@@ -53,24 +53,22 @@
 
 ### Trace art
 
-1) Import an image and tick **Trace art**. The light part of the image is drawn with tracks; tick **Invert colors** to use the dark part instead.
-2) Set the **Track width / gap (mm)**. Neighbouring tracks are never closer than width + gap. Fine tracks and a larger size follow the image much more closely.
+1) Import an image and tick **Trace art**. Light areas become tracks (**Invert colors** swaps this).
+2) Set the track and via sizes. Thinner tracks follow the image more closely.
 3) Pick a pattern:
-   - **Follow outline**: tracks follow the shape in small 45° steps, turning together as a band. Set the **Number of nets**: 1 makes one long trace, more share the shape out into separate traces. Every net has a via at both ends, and is placed on its own board net (`ART1_1`, `ART1_2`, ...). Set **Tracks side by side** to draw a band along the edge with an open middle, or 0 to fill the whole shape.
-   - **Rows**: one long track in back-and-forth rows, like a heater meander. Its two ends are too close together for vias (red dots in the preview).
-4) Set the **Via diameter / drill (mm)** and, for Follow outline, the **Via side** where the tracks should leave the shape. Tracks that cannot reach that side leave on another side. **Auto** picks the deepest exit it can find.
-5) Click **Insert Graphics**. On copper the result is real tracks and vias. On silkscreen or solder mask the vias are drawn as dots.
+   - **Follow outline**: tracks follow the shape as a band. Each net gets its own board net (`ART1_1`, ...) with a via at both ends. **Tracks side by side** at 0 fills the shape.
+   - **Rows**: one back-and-forth track, like a heater meander.
+4) Click **Insert Graphics**. On copper, you get real tracks and vias.
 
-Parts too thin to hold tracks, such as whiskers, branch off the nearest trace as a thin line ending in a via, like a test point. Thin lines not touching anything get a via at both ends and a net of their own.
-
-Parts of the image that do not touch, such as a pupil inside an eye, cannot share a trace, so each one always takes a net of its own. The result can therefore have more nets than you asked for, and fewer if the exit is too narrow for them. Very short rings in the middle of the shape can be left out.
+#### Side note: Thin parts like whiskers become lines ending in a via. Separate parts, like a pupil in an eye, always get their own net.
 
 ### JLCPCB full-color printing (EasyEDA multi-color silkscreen)
 
-1) Import an image, tick **JLCPCB multi-color silkscreen** and click **Insert Graphics**. The image is placed in full color as a preview only, so it doesn't show up in the Gerbers.
-2) Once all color graphics are placed, click **Export JLCPCB Files**. A new `JLCPCB_color_...` folder is created next to the board, with four files and a `preview` folder showing the print.
-3) Plot your Gerbers and drill files as usual, then zip them together with the four exported files (without the `preview` folder).
-4) Upload the zip to JLCPCB and select **EasyEDA multi-color silkscreen** (requires white PCB color and ENIG surface finish).
+1) Import an image, tick **JLCPCB multi-color silkscreen** and click **Insert Graphics**. The image is shown in full color on the board but isn't plotted to the Gerbers.
+2) Once all color graphics are placed, click **Export JLCPCB Files**. A `JLCPCB_color_...` folder is created next to the board with a ready-to-upload `Gerber_..._JLCPCB.zip`, holding the Gerbers, drill files and color files.
+3) Upload the zip to JLCPCB and select **EasyEDA multi-color silkscreen** (needs white PCB color and ENIG).
+
+#### Side note: The board needs a closed Edge.Cuts outline. The folder also has the four color files loose (`.FCTS`, `.FCBS`, `.FCBO`, `.FCBM`) for use with your own Gerber zip, and a `preview` folder showing the print (gray is not printed).
 
 ## Examples
 
