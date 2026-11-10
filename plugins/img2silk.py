@@ -270,64 +270,76 @@ if wx:
             previews.Add(self.preview_bw, 0)
             s.Add(previews, 0, wx.ALL | wx.ALIGN_CENTER, 10)
 
-            grid = wx.FlexGridSizer(0, 2, 5, 5)
-            grid.AddGrowableCol(1)
-            grid.Add(wx.StaticText(self, label="Dithering algorithm:"), 0, wx.ALIGN_CENTER_VERTICAL)
-            self.dither = wx.Choice(self, choices=[n for n, _ in _ALGOS])
+            def new_grid():
+                g = wx.FlexGridSizer(0, 2, 5, 5)
+                g.AddGrowableCol(1)
+                return g
+            grid, trace_grid, mc_grid, jlc_grid, dim_grid = (new_grid() for _ in range(5))
+            # Make each control a child of the box of its section. If you do
+            # not do this, wx shows a warning.
+            trace_box = wx.StaticBoxSizer(wx.VERTICAL, self)
+            mc_box = wx.StaticBoxSizer(wx.VERTICAL, self)
+            dim_box = wx.StaticBoxSizer(wx.VERTICAL, self)
+            jlc_box = wx.StaticBoxSizer(wx.VERTICAL, self)
+            trace_p, mc_p, jlc_p, dim_p = (b.GetStaticBox() for b in (trace_box, mc_box, jlc_box, dim_box))
+            gen_box = wx.StaticBoxSizer(wx.VERTICAL, self)
+            gen_p = gen_box.GetStaticBox()
+            grid.Add(wx.StaticText(gen_p, label="Dithering algorithm:"), 0, wx.ALIGN_CENTER_VERTICAL)
+            self.dither = wx.Choice(gen_p, choices=[n for n, _ in _ALGOS])
             self.dither.SetSelection(0)
             self.dither.Disable()
             self.dither.Bind(wx.EVT_CHOICE, self.update_bw)
             grid.Add(self.dither, 1, wx.EXPAND)
-            grid.Add(wx.StaticText(self, label="Black / white threshold:"), 0, wx.ALIGN_CENTER_VERTICAL)
-            self.threshold = wx.Slider(self, value=50, minValue=0, maxValue=100,
+            grid.Add(wx.StaticText(gen_p, label="Black / white threshold:"), 0, wx.ALIGN_CENTER_VERTICAL)
+            self.threshold = wx.Slider(gen_p, value=50, minValue=0, maxValue=100,
                                        style=wx.SL_HORIZONTAL | wx.SL_LABELS)
             self.threshold.Disable()
             self.threshold.Bind(wx.EVT_SLIDER, self.update_bw)
             grid.Add(self.threshold, 1, wx.EXPAND)
-            grid.Add(wx.StaticText(self, label="Pixel Scale:"), 0, wx.ALIGN_CENTER_VERTICAL)
-            self.dot_size = wx.Slider(self, value=25, minValue=15, maxValue=150)
+            grid.Add(wx.StaticText(gen_p, label="Pixel Scale:"), 0, wx.ALIGN_CENTER_VERTICAL)
+            self.dot_size = wx.Slider(gen_p, value=25, minValue=15, maxValue=150)
             self.dot_size.Disable()
             self.dot_size.Bind(wx.EVT_SLIDER, self.on_dot_size)
-            self.dot_val = wx.StaticText(self, label="0.25")
+            self.dot_val = wx.StaticText(gen_p, label="0.25")
             dot_col = wx.BoxSizer(wx.VERTICAL)
             dot_col.Add(self.dot_size, 0, wx.EXPAND)
             dot_col.Add(self.dot_val, 0, wx.ALIGN_CENTER_HORIZONTAL)
             dot_row = wx.BoxSizer(wx.HORIZONTAL)
-            dot_row.Add(wx.StaticText(self, label="0.15"), 0, wx.ALIGN_CENTER_VERTICAL)
+            dot_row.Add(wx.StaticText(gen_p, label="0.15"), 0, wx.ALIGN_CENTER_VERTICAL)
             dot_row.Add(dot_col, 1, wx.EXPAND)
-            dot_row.Add(wx.StaticText(self, label="1.50"), 0, wx.ALIGN_CENTER_VERTICAL)
+            dot_row.Add(wx.StaticText(gen_p, label="1.50"), 0, wx.ALIGN_CENTER_VERTICAL)
             grid.Add(dot_row, 1, wx.EXPAND)
-            grid.Add(wx.StaticText(self, label="Layer:"), 0, wx.ALIGN_CENTER_VERTICAL)
-            self.layer = wx.Choice(self, choices=list(_LAYER_CHOICES))
+            grid.Add(wx.StaticText(gen_p, label="Layer:"), 0, wx.ALIGN_CENTER_VERTICAL)
+            self.layer = wx.Choice(gen_p, choices=list(_LAYER_CHOICES))
             self.layer.SetSelection(1)
             self.layer.Disable()
             grid.Add(self.layer, 1, wx.EXPAND)
-            grid.Add(wx.StaticText(self, label="Side:"), 0, wx.ALIGN_CENTER_VERTICAL)
-            self.side = wx.Choice(self, choices=["Front", "Back"])
+            grid.Add(wx.StaticText(gen_p, label="Side:"), 0, wx.ALIGN_CENTER_VERTICAL)
+            self.side = wx.Choice(gen_p, choices=["Front", "Back"])
             self.side.SetToolTip("Back side graphics are mirrored so they "
                                  "read correctly viewed from the back.")
             self.side.SetSelection(0)
             self.side.Disable()
             grid.Add(self.side, 1, wx.EXPAND)
-            self.outline = wx.CheckBox(self, label="Toggle outline")
+            self.outline = wx.CheckBox(gen_p, label="Toggle outline")
             self.outline.Disable()
             self.outline.Bind(wx.EVT_CHECKBOX, self.on_outline)
             grid.Add(self.outline, 0, wx.ALIGN_CENTER_VERTICAL)
-            self.outline_layer = wx.Choice(self, choices=list(_LAYER_CHOICES))
+            self.outline_layer = wx.Choice(gen_p, choices=list(_LAYER_CHOICES))
             self.outline_layer.SetSelection(1)
             self.outline_layer.Disable()
             self.outline_layer.Bind(wx.EVT_CHOICE, self.update_bw)
             grid.Add(self.outline_layer, 1, wx.EXPAND)
-            self.five = wx.CheckBox(self, label="Multi-color graphic")
+            self.five = wx.CheckBox(mc_p, label="Multi-color graphic")
             self.five.SetToolTip(
                 "Dithers the image using the board itself as a palette. "
                 "Shades are built by stacking silkscreen, copper, and solder "
                 "mask openings.")
             self.five.Disable()
             self.five.Bind(wx.EVT_CHECKBOX, self.on_5c)
-            grid.Add(self.five, 0, wx.ALIGN_CENTER_VERTICAL)
-            grid.Add((0, 0))
-            self.jlc = wx.CheckBox(self, label="JLCPCB multi-color silkscreen")
+            mc_grid.Add(self.five, 0, wx.ALIGN_CENTER_VERTICAL)
+            mc_grid.Add((0, 0))
+            self.jlc = wx.CheckBox(jlc_p, label="JLCPCB multi-color silkscreen")
             self.jlc.SetToolTip(
                 "Keeps the image in full color for JLCPCB's \"EasyEDA "
                 "multi-color silkscreen\" option, which needs a white board. It "
@@ -335,8 +347,8 @@ if wx:
                 "to Gerbers.")
             self.jlc.Disable()
             self.jlc.Bind(wx.EVT_CHECKBOX, self.on_jlc)
-            grid.Add(self.jlc, 0, wx.ALIGN_CENTER_VERTICAL)
-            btn_export = wx.Button(self, label="Export JLCPCB Files")
+            jlc_grid.Add(self.jlc, 0, wx.ALIGN_CENTER_VERTICAL)
+            btn_export = wx.Button(jlc_p, label="Export JLCPCB Files")
             btn_export.SetToolTip(
                 "Makes a new folder next to the board with a ready-to-upload "
                 "JLCPCB zip: the Gerber and drill files in the EasyEDA format, "
@@ -344,8 +356,8 @@ if wx:
                 ".FCBM). The four color files are also written loose, for use "
                 "with your own Gerber zip.")
             btn_export.Bind(wx.EVT_BUTTON, self.on_export)
-            grid.Add(btn_export, 1, wx.EXPAND)
-            self.trace = wx.CheckBox(self, label="Trace art")
+            jlc_grid.Add(btn_export, 1, wx.EXPAND)
+            self.trace = wx.CheckBox(trace_p, label="Trace art")
             self.trace.SetToolTip(
                 "Draws the shape with parallel tracks one gap apart, like routed "
                 "PCB traces. On copper they are placed as real tracks and vias, "
@@ -353,14 +365,13 @@ if wx:
                 "thin lines ending in a via, like test points.")
             self.trace.Disable()
             self.trace.Bind(wx.EVT_CHECKBOX, self.on_trace)
-            grid.Add(self.trace, 0, wx.ALIGN_CENTER_VERTICAL)
-            self.trace_style = wx.Choice(self, choices=["Follow outline", "Rows"])
+            trace_grid.Add(self.trace, 0, wx.ALIGN_CENTER_VERTICAL)
+            self.trace_style = wx.Choice(trace_p, choices=["Follow outline", "Rows"])
             self.trace_style.SetSelection(0)
             self.trace_style.Disable()
             self.trace_style.Bind(wx.EVT_CHOICE, self.on_5c)
-            grid.Add(self.trace_style, 1, wx.EXPAND)
-            grid.Add(wx.StaticText(self, label="Number of nets:"), 0, wx.ALIGN_CENTER_VERTICAL)
-            self.trace_nets = wx.SpinCtrl(self, min=1, max=200, initial=1)
+            trace_grid.Add(self.trace_style, 1, wx.EXPAND)
+            self.trace_nets = wx.SpinCtrl(trace_p, min=1, max=200, initial=1)
             self.trace_nets.SetToolTip(
                 "How many separate traces to make. Each one is a net with a via "
                 "at both ends. Parts of the image that do not touch, such as a "
@@ -368,29 +379,36 @@ if wx:
             self.trace_nets.Disable()
             self.trace_nets.Bind(wx.EVT_SPINCTRL, self.update_bw)
             self.trace_nets.Bind(wx.EVT_TEXT, self.update_bw)
-            grid.Add(self.trace_nets, 1, wx.EXPAND)
-            grid.Add(wx.StaticText(self, label="Tracks side by side:"), 0, wx.ALIGN_CENTER_VERTICAL)
-            self.trace_count = wx.SpinCtrl(self, min=0, max=200, initial=0)
+            self.trace_count = wx.SpinCtrl(trace_p, min=0, max=200, initial=0)
             self.trace_count.SetToolTip("How many tracks run side by side along "
                                         "the outline. 0 fills the whole shape.")
             self.trace_count.Disable()
             self.trace_count.Bind(wx.EVT_SPINCTRL, self.update_bw)
             self.trace_count.Bind(wx.EVT_TEXT, self.update_bw)
-            grid.Add(self.trace_count, 1, wx.EXPAND)
-            self.track_w = wx.TextCtrl(self, value="0.2")
-            self.track_gap = wx.TextCtrl(self, value="0.2")
-            self.via_d = wx.TextCtrl(self, value="0.6")
-            self.via_drill = wx.TextCtrl(self, value="0.3")
-            for label, c in (("Track width (mm):", self.track_w),
-                             ("Track gap (mm):", self.track_gap),
-                             ("Via diameter (mm):", self.via_d),
-                             ("Via hole (mm):", self.via_drill)):
+            self.track_w = wx.TextCtrl(trace_p, value="0.2")
+            self.track_gap = wx.TextCtrl(trace_p, value="0.2")
+            self.via_d = wx.TextCtrl(trace_p, value="0.6")
+            self.via_drill = wx.TextCtrl(trace_p, value="0.3")
+            for c in (self.track_w, self.track_gap, self.via_d, self.via_drill):
                 c.Disable()
                 c.Bind(wx.EVT_TEXT, self.update_bw)
-                grid.Add(wx.StaticText(self, label=label), 0, wx.ALIGN_CENTER_VERTICAL)
-                grid.Add(c, 1, wx.EXPAND)
-            grid.Add(wx.StaticText(self, label="Via side:"), 0, wx.ALIGN_CENTER_VERTICAL)
-            self.via_side = wx.Choice(self, choices=[n for n, _ in _VIA_SIDES])
+            # Each row has two pairs of a label and a field. The labels on the
+            # right have the same width. Thus, the fields on the right align.
+            pairs = ((("Number of nets:", self.trace_nets), ("Tracks side by side:", self.trace_count)),
+                     (("Track width (mm):", self.track_w), ("Track gap (mm):", self.track_gap)),
+                     (("Via diameter (mm):", self.via_d), ("Via hole (mm):", self.via_drill)))
+            right = [wx.StaticText(trace_p, label=r[0]) for _, r in pairs]
+            right_w = max(t.GetBestSize().width for t in right)
+            for ((l_label, l_ctrl), (_, r_ctrl)), r_text in zip(pairs, right):
+                trace_grid.Add(wx.StaticText(trace_p, label=l_label), 0, wx.ALIGN_CENTER_VERTICAL)
+                row = wx.BoxSizer(wx.HORIZONTAL)
+                row.Add(l_ctrl, 1, wx.EXPAND)
+                r_text.SetMinSize((right_w, -1))
+                row.Add(r_text, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 10)
+                row.Add(r_ctrl, 1, wx.EXPAND | wx.LEFT, 5)
+                trace_grid.Add(row, 1, wx.EXPAND)
+            trace_grid.Add(wx.StaticText(trace_p, label="Via side:"), 0, wx.ALIGN_CENTER_VERTICAL)
+            self.via_side = wx.Choice(trace_p, choices=[n for n, _ in _VIA_SIDES])
             self.via_side.SetToolTip(
                 "Where the tracks leave the shape and the vias go. Tracks that "
                 "cannot reach that side leave on another side. Auto picks the "
@@ -399,49 +417,61 @@ if wx:
             self.via_side.SetSelection(0)
             self.via_side.Disable()
             self.via_side.Bind(wx.EVT_CHOICE, self.update_bw)
-            grid.Add(self.via_side, 1, wx.EXPAND)
-            grid.Add(wx.StaticText(self, label="Multi-color PCB layers:"), 0, wx.ALIGN_CENTER_VERTICAL)
-            self.mc_layers = wx.Choice(self, choices=[
+            trace_grid.Add(self.via_side, 1, wx.EXPAND)
+            mc_grid.Add(wx.StaticText(mc_p, label="Multi-color PCB layers:"), 0, wx.ALIGN_CENTER_VERTICAL)
+            self.mc_layers = wx.Choice(mc_p, choices=[
                 "Silkscreen, Copper and Solder Mask (5 Colors)",
                 "Silkscreen and Solder Mask (3 Colors)"])
             self.mc_layers.SetSelection(0)
             self.mc_layers.Disable()
             self.mc_layers.Bind(wx.EVT_CHOICE, self.on_5c_layers)
-            grid.Add(self.mc_layers, 1, wx.EXPAND)
-            grid.Add(wx.StaticText(self, label="PCB color:"), 0, wx.ALIGN_CENTER_VERTICAL)
-            self.mask_col = wx.Choice(self, choices=[m[0] for m in _MASKS])
+            mc_grid.Add(self.mc_layers, 1, wx.EXPAND)
+            mc_grid.Add(wx.StaticText(mc_p, label="PCB color:"), 0, wx.ALIGN_CENTER_VERTICAL)
+            self.mask_col = wx.Choice(mc_p, choices=[m[0] for m in _MASKS])
             self.mask_col.SetSelection(_DEF_MASK)
             self.mask_col.Disable()
             self.mask_col.Bind(wx.EVT_CHOICE, self.update_bw)
-            grid.Add(self.mask_col, 1, wx.EXPAND)
-            grid.Add(wx.StaticText(self, label="Surface finish:"), 0, wx.ALIGN_CENTER_VERTICAL)
-            self.finish = wx.Choice(self, choices=[f[0] for f in _FINISH])
+            mc_grid.Add(self.mask_col, 1, wx.EXPAND)
+            mc_grid.Add(wx.StaticText(mc_p, label="Surface finish:"), 0, wx.ALIGN_CENTER_VERTICAL)
+            self.finish = wx.Choice(mc_p, choices=[f[0] for f in _FINISH])
             self.finish.SetSelection(_DEF_FINISH)
             self.finish.Disable()
             self.finish.Bind(wx.EVT_CHOICE, self.update_bw)
-            grid.Add(self.finish, 1, wx.EXPAND)
-            grid.Add((0, 0))
-            self.invert = wx.CheckBox(self, label="Invert colors")
+            mc_grid.Add(self.finish, 1, wx.EXPAND)
+            self.invert = wx.CheckBox(gen_p, label="Invert colors")
             self.invert.Disable()
             self.invert.Bind(wx.EVT_CHECKBOX, self.update_bw)
-            grid.Add(self.invert, 1, wx.EXPAND)
-            grid.Add(wx.StaticText(self, label="Length (mm):"), 0, wx.ALIGN_CENTER_VERTICAL)
-            self.length = wx.TextCtrl(self)
+            grid.Add(self.invert, 0, wx.ALIGN_CENTER_VERTICAL)
+            grid.Add((0, 0))
+            dim_grid.Add(wx.StaticText(dim_p, label="Length (mm):"), 0, wx.ALIGN_CENTER_VERTICAL)
+            self.length = wx.TextCtrl(dim_p)
             self.length.Disable()
             self.length.Bind(wx.EVT_TEXT, self.on_length)
-            grid.Add(self.length, 1, wx.EXPAND)
-            grid.Add(wx.StaticText(self, label="Width (mm):"), 0, wx.ALIGN_CENTER_VERTICAL)
-            self.width = wx.TextCtrl(self)
+            dim_grid.Add(self.length, 1, wx.EXPAND)
+            dim_grid.Add(wx.StaticText(dim_p, label="Width (mm):"), 0, wx.ALIGN_CENTER_VERTICAL)
+            self.width = wx.TextCtrl(dim_p)
             self.width.Disable()
             self.width.Bind(wx.EVT_TEXT, self.on_width)
-            grid.Add(self.width, 1, wx.EXPAND)
-            grid.Add((0, 0))
-            self.keep_aspect = wx.CheckBox(self, label="Maintain aspect ratio")
+            dim_grid.Add(self.width, 1, wx.EXPAND)
+            self.keep_aspect = wx.CheckBox(dim_p, label="Maintain aspect ratio")
             self.keep_aspect.SetValue(True)
             self.keep_aspect.Disable()
             self.keep_aspect.Bind(wx.EVT_CHECKBOX, self.on_keep_aspect)
-            grid.Add(self.keep_aspect, 1, wx.EXPAND)
-            s.Add(grid, 0, wx.LEFT | wx.RIGHT | wx.EXPAND, 10)
+            dim_grid.Add(self.keep_aspect, 0, wx.ALIGN_CENTER_VERTICAL)
+            dim_grid.Add((0, 0))
+
+            # Put each section in a box, as in kicad-rfsim. The label column of
+            # each grid has the same width. Thus, the fields of all boxes align.
+            sections = ((gen_box, grid), (mc_box, mc_grid),
+                        (trace_box, trace_grid), (jlc_box, jlc_grid),
+                        (dim_box, dim_grid))
+            label_w = max(it.CalcMin().width for _, g in sections
+                          for it in list(g.GetChildren())[::2])
+            for box, g in sections:
+                g.Add((label_w, 0))
+                g.Add((0, 0))
+                box.Add(g, 0, wx.ALL | wx.EXPAND, 6)
+                s.Add(box, 0, wx.LEFT | wx.RIGHT | wx.TOP | wx.EXPAND, 10)
 
             btn_ref = wx.Button(self, label="Place Reference Frame")
             btn_ref.SetToolTip(
