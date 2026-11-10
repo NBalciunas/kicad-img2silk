@@ -49,7 +49,7 @@
 3) Change the size by typing new dimensions or by scaling a **Place Reference Frame** rectangle, and adjust any other settings.
 4) Click **Update Graphics**. The old graphic is replaced in place.
 
-#### Side note: The source image file must still exist at its original location.
+> Side note: The source image file must still exist at its original location.
 
 ### Trace art
 
@@ -60,7 +60,7 @@
    - **Rows**: one back-and-forth track, like a heater meander.
 4) Click **Insert Graphics**. On copper, you get real tracks and vias.
 
-#### Side note: Thin parts like whiskers become lines ending in a via. Separate parts, like a pupil in an eye, always get their own net.
+> Thin parts like whiskers become lines ending in a via. Separate parts, like a pupil in an eye, always get their own net.
 
 ### JLCPCB full-color printing (EasyEDA multi-color silkscreen)
 
@@ -68,7 +68,7 @@
 2) Once all color graphics are placed, click **Export JLCPCB Files**. A `JLCPCB_color_...` folder is created next to the board with a ready-to-upload `Gerber_..._JLCPCB.zip`, holding the Gerbers, drill files and color files.
 3) Upload the zip to JLCPCB and select **EasyEDA multi-color silkscreen** (needs white PCB color and ENIG).
 
-#### Side note: The board needs a closed Edge.Cuts outline. The folder also has the four color files loose (`.FCTS`, `.FCBS`, `.FCBO`, `.FCBM`) for use with your own Gerber zip, and a `preview` folder showing the print (gray is not printed).
+> The board needs a closed Edge.Cuts outline. The folder also has the four color files loose (`.FCTS`, `.FCBS`, `.FCBO`, `.FCBM`) for use with your own Gerber zip, and a `preview` folder showing the print (gray is not printed).
 
 ## Examples
 
